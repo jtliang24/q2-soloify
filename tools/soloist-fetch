@@ -1,0 +1,48 @@
+#!/bin/sh
+# soloist-fetch [--cache DIR] [DEST]
+# Puts Spotify's Soloist build for this machine in DEST (default $SOLOIFY_DATA/soloist, or
+# data/soloist): DIR/soloist_release_<target>.tar.gz when present, otherwise the fixed URL on
+# Spotify's downloads page. Builds may not be redistributed, so each machine fetches its own.
+# Prints the installed version. POSIX sh: the container's entrypoint runs it too.
+set -eu
+
+cache=
+if [ "${1:-}" = "--cache" ]; then
+    cache=$2
+    shift 2
+fi
+dest=${1:-${SOLOIFY_DATA:-data}/soloist}
+
+case "$(uname -s)/$(uname -m)" in
+Linux/x86_64) target=x86_64 ;;
+Linux/aarch64 | Linux/arm64) target=arm64 ;;
+Linux/armv7l | Linux/armv8l) target=arm32 ;;
+Darwin/arm64) target=osx_arm64 ;;
+*)
+    echo "soloist-fetch: no Soloist build for $(uname -s) $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+tarball=$cache/soloist_release_$target.tar.gz
+if [ -z "$cache" ] || [ ! -f "$tarball" ]; then
+    tarball=$tmp/soloist.tar.gz
+    curl -fsSL --retry 3 -o "$tarball" "https://soloist-builds.spotifycdn.com/soloist_release_$target.tar.gz"
+fi
+tar -xzf "$tarball" -C "$tmp"
+[ -f "$tmp/soloist" ] || {
+    echo "soloist-fetch: $tarball holds no soloist binary" >&2
+    exit 1
+}
+
+mkdir -p "$dest"
+for f in soloist CHANGELOG.md THIRD_PARTY_LICENSES.txt; do
+    if [ -f "$tmp/$f" ]; then
+        cp -f "$tmp/$f" "$dest/.$f.new"
+        mv -f "$dest/.$f.new" "$dest/$f"
+    fi
+done
+chmod 0755 "$dest/soloist"
+sed -n 's/^## Release v\([0-9.]*\).*/\1/p' "$dest/CHANGELOG.md" 2>/dev/null | head -n 1

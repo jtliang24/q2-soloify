@@ -1,2 +1,15 @@
 soloist_release_*
 *.key
+
+# local state: Soloist, its session, the bridge's certificate and token
+data/
+.env
+# Python and Nix
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+result
+result-*

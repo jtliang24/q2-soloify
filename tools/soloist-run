@@ -1,0 +1,17 @@
+#!/bin/sh
+# soloist-run [SOLOIST OPTIONS...]
+# Soloist as the bridge will run it, for spikes before the bridge exists: the Connect name
+# $SOLOIFY_NAME (Q2), state and cache under $SOLOIFY_DATA (data), the key from
+# $SOLOIST_API_KEY_FILE (soloist_api.key). Extra options follow, e.g. --pair, -d q2_soloify or
+# --ws 127.0.0.1:0. Soloist takes its key only as -k, so ps shows it while it runs.
+set -eu
+
+key=${SOLOIST_API_KEY_FILE:-soloist_api.key}
+data=${SOLOIFY_DATA:-data}
+if [ ! -r "$key" ]; then
+    echo "soloist-run: can't read the API key at $key (set SOLOIST_API_KEY_FILE)" >&2
+    exit 1
+fi
+mkdir -p "$data/soloist-state" "$data/cache"
+exec soloist -n "${SOLOIFY_NAME:-Q2}" -k "$(tr -d ' \r\n' <"$key")" \
+    -D "$data/soloist-state" -C "$data/cache" -z 100 "$@"
