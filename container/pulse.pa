@@ -1,0 +1,5 @@
+# The container's private PulseAudio: one null sink, the default, so Soloist plays into it and the
+# bridge's ffmpeg records its monitor (q2_soloify.monitor). Nothing reaches the host's audio.
+load-module module-native-protocol-unix auth-anonymous=1
+load-module module-null-sink sink_name=q2_soloify rate=44100 channels=2 format=s16le sink_properties=device.description=Soloify
+set-default-sink q2_soloify

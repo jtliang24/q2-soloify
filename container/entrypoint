@@ -1,0 +1,34 @@
+#!/bin/sh
+# The container's start: as root, copy the API key secret where the soloify user can read it (a
+# rootless engine maps a 0600 host file to a uid the user isn't) and own the data volume; then, as
+# soloify, start the private PulseAudio, fetch Soloist when missing (from /import when a dev
+# compose mounts a tarball there) and run the command.
+set -eu
+
+if [ "$(id -u)" = 0 ]; then
+    secret=/run/secrets/soloist_api_key
+    if [ -r "$secret" ]; then
+        install -m 0400 -o soloify -g soloify "$secret" "$SOLOIST_API_KEY_FILE"
+    fi
+    chown soloify:soloify "$SOLOIFY_DATA"
+    exec env HOME=/home/soloify USER=soloify \
+        setpriv --reuid soloify --regid soloify --init-groups "$0" "$@"
+fi
+
+pulseaudio --daemonize=yes --exit-idle-time=-1 --disallow-exit --disable-shm=yes \
+    --log-target=stderr -n -F /etc/soloify/pulse.pa
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pactl info >/dev/null 2>&1 && break
+    sleep 0.5
+done
+pactl info >/dev/null 2>&1 || {
+    echo "soloify-entrypoint: PulseAudio didn't start" >&2
+    exit 1
+}
+
+if [ ! -x "$SOLOIFY_DATA/soloist/soloist" ]; then
+    echo "soloify-entrypoint: fetching Soloist" >&2
+    soloist-fetch --cache /import "$SOLOIFY_DATA/soloist" >&2
+fi
+
+exec "$@"

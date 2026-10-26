@@ -1,0 +1,8 @@
+# Development: the repo's git-ignored soloist_release_<target>.tar.gz is installed instead of a
+# download, and the container stays up for `docker compose exec soloify sh` until the bridge exists.
+services:
+  soloify:
+    volumes:
+      - ./:/import:ro
+    command: ["sleep", "infinity"]
+    restart: "no"

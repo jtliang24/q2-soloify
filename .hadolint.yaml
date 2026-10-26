@@ -1,0 +1,3 @@
+# Debian's point releases replace package versions, so pinned apt versions stop installing.
+ignored:
+  - DL3008

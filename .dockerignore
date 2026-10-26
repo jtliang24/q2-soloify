@@ -1,0 +1,10 @@
+.git
+data
+soloist_release_*
+*.key
+.env
+**/__pycache__
+**/*.egg-info
+.pytest_cache
+.ruff_cache
+result*

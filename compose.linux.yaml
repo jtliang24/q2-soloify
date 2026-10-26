@@ -1,0 +1,6 @@
+# Linux hosts: the host's network, so Soloist's Connect discovery reaches the LAN for pairing.
+# The bridge then listens on the host's 7443 directly.
+services:
+  soloify:
+    network_mode: host
+    ports: !reset []

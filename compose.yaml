@@ -1,0 +1,24 @@
+# docker compose up / podman compose up. The bridge's TLS port is published on 7443; the data
+# volume keeps Soloist, its paired session, the Web API token and the bridge's certificate.
+# Linux hosts: add -f compose.linux.yaml for host networking, so the phone's Spotify app can
+# discover Soloist for its first pairing. Development: add -f compose.dev.yaml.
+services:
+  soloify:
+    build:
+      context: .
+      dockerfile: container/Containerfile
+    image: ghcr.io/jtliang24/q2-soloify:dev
+    ports:
+      - "7443:7443"
+    volumes:
+      - soloify-data:/data
+    secrets:
+      - soloist_api_key
+    restart: unless-stopped
+
+secrets:
+  soloist_api_key:
+    file: ./soloist_api.key
+
+volumes:
+  soloify-data: {}
