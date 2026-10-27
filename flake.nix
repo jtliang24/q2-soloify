@@ -92,7 +92,12 @@
                 pulseaudio # pactl, parec: the null sink and its monitor
                 pipewire # pw-cli, pw-dump
                 qemu-user # the relay's host tests, under qemu-mipsel with the stock rootfs
+                squashfs-tools # unsquashfs: the stock rootfs's libraries, for the relay's link
+                nftables # tools/soloify-stall
               ];
+
+            # the relay's host build (tests): OpenSSL's headers and libraries
+            buildInputs = [ pkgs.openssl ];
 
             hardeningDisable = [ "all" ];
 
