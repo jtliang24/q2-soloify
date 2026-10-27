@@ -79,10 +79,11 @@ class Relay:
         self.env = {**os.environ, **SINK_NOWHERE, **(env or {})}
         self.proc = None
         self.log: list[str] = []
+        self.binary: list[str] | None = None  # how to run it: the host build by default
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
-            str(relay_binary()),
+            *(self.binary or [str(relay_binary())]),
             "-v",
             *self.args,
             cwd=self.folder,
