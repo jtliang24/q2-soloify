@@ -21,6 +21,16 @@ def relay_binary() -> Path:
     return _built
 
 
+SINK_NOWHERE = {"SOLOIFY_DECODE": "cat", "SOLOIFY_SINK": "cat >/dev/null"}
+# The device's decoder line, with the host's ffmpeg
+DECODE = (
+    "ffmpeg -nostdin -loglevel error -probesize 32 -analyzeduration 0 -fflags nobuffer "
+    "-f ogg -i pipe:0 -ac 2 -ar 44100 -f s16le pipe:1"
+)
+# A sink that plays in real time, as aplay does
+REALTIME_SINK = f"{sys.executable} -I {ROOT / 'tests/fake_aplay.py'}"
+
+
 class Bridge:
     """A bridge with the test source; keeps its sessions to look at."""
 
@@ -28,11 +38,13 @@ class Bridge:
         self.identity = server.Identity.load(data)
         self.inflight = inflight
         self.sessions: list[audio.Session] = []
+        self.encoders = 0
         self.server = server.Server(self.identity, self._session)
         self.listener = None
         self.port = 0
 
     def _encoder(self):
+        self.encoders += 1
         return audio.Encoder(audio.ffmpeg_args("test", 160))
 
     async def _session(self, reader, writer):
@@ -63,7 +75,8 @@ class Relay:
         self.folder = folder
         (folder / "remote").write_text("".join(f"{line}\n" for line in remote))
         self.args = args
-        self.env = {**os.environ, **(env or {})}
+        # The device's ffmpeg isn't here: by default the sink takes everything at once
+        self.env = {**os.environ, **SINK_NOWHERE, **(env or {})}
         self.proc = None
         self.log: list[str] = []
 
@@ -107,3 +120,51 @@ async def until(check, timeout: float = 10, step: float = 0.05):
         if loop.time() > end:
             raise AssertionError("condition not met in time")
         await asyncio.sleep(step)
+
+
+def stat(line: str, key: str) -> int:
+    """A number from a relay stats line."""
+    return int(line.split(f"{key}=")[1].split()[0])
+
+
+class FreezingProxy:
+    """A TCP proxy between relay and bridge that can stop carrying bytes, as a blocked link does."""
+
+    def __init__(self, port: int):
+        self.port = port
+        self.flowing = asyncio.Event()
+        self.flowing.set()
+        self.listener = None
+        self.tasks: set[asyncio.Task] = set()
+
+    async def start(self):
+        self.listener = await asyncio.start_server(self._client, "127.0.0.1", 0)
+        return self.listener.sockets[0].getsockname()[1]
+
+    async def _pipe(self, reader, writer):
+        try:
+            while data := await reader.read(65536):
+                await self.flowing.wait()
+                writer.write(data)
+                await writer.drain()
+        except (ConnectionError, asyncio.CancelledError):
+            pass
+        finally:
+            writer.close()
+
+    async def _client(self, reader, writer):
+        up_r, up_w = await asyncio.open_connection("127.0.0.1", self.port)
+        for t in (self._pipe(reader, up_w), self._pipe(up_r, writer)):
+            task = asyncio.create_task(t)
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
+
+    async def freeze(self, seconds: float):
+        self.flowing.clear()
+        await asyncio.sleep(seconds)
+        self.flowing.set()
+
+    async def stop(self):
+        for t in list(self.tasks):
+            t.cancel()
+        self.listener.close()
