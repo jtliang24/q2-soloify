@@ -31,12 +31,25 @@ DECODE = (
 REALTIME_SINK = f"{sys.executable} -I {ROOT / 'tests/fake_aplay.py'}"
 
 
+class SlowEncoder(audio.Encoder):
+    """An encoder that takes a while to start, as Soloist's resume and the pulse capture do."""
+
+    def __init__(self, args: list[str], delay: float):
+        super().__init__(args)
+        self.delay = delay
+
+    async def start(self) -> None:
+        await asyncio.sleep(self.delay)
+        await super().start()
+
+
 class Bridge:
     """A bridge with the test source; keeps its sessions to look at."""
 
-    def __init__(self, data: Path, inflight: int = 2000):
+    def __init__(self, data: Path, inflight: int = 2000, start_delay: float = 0):
         self.identity = server.Identity.load(data)
         self.inflight = inflight
+        self.start_delay = start_delay
         self.sessions: list[audio.Session] = []
         self.encoders = 0
         self.server = server.Server(self.identity, self._session)
@@ -45,7 +58,7 @@ class Bridge:
 
     def _encoder(self):
         self.encoders += 1
-        return audio.Encoder(audio.ffmpeg_args("test", 160))
+        return SlowEncoder(audio.ffmpeg_args("test", 160), self.start_delay)
 
     async def _session(self, reader, writer):
         s = audio.Session(audio.Player(None), self._encoder, self.inflight)
@@ -121,6 +134,12 @@ async def until(check, timeout: float = 10, step: float = 0.05):
         if loop.time() > end:
             raise AssertionError("condition not met in time")
         await asyncio.sleep(step)
+
+
+def cpu_seconds(pid: int) -> float:
+    """The CPU time (user and system) a process has used so far."""
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
 
 
 def stat(line: str, key: str) -> int:

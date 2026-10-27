@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from relay_rig import DECODE, REALTIME_SINK, Bridge, FreezingProxy, Relay, stat, until
+from relay_rig import DECODE, REALTIME_SINK, Bridge, FreezingProxy, Relay, cpu_seconds, stat, until
 
 
 @pytest.fixture
@@ -79,3 +79,29 @@ async def test_stalls_pause_the_bridge_and_the_delay_stays_one_buffer(tmp_path, 
         assert len(bridge.sessions) == 1  # no reconnect: the link only stalled
     finally:
         await proxy.stop()
+
+
+async def test_a_stall_neither_spins_the_relay_nor_repeats(tmp_path, relays):
+    """While the bridge sends nothing the relay still sleeps in poll, and it reads again after."""
+    bridge = await Bridge(tmp_path / "data", start_delay=0.5).start()
+    proxy = FreezingProxy(bridge.port)
+    port = await proxy.start()
+    env = {"SOLOIFY_DECODE": DECODE, "SOLOIFY_SINK": REALTIME_SINK}
+    relay = await Relay(tmp_path, [bridge.line(port=port) + " buffer=1000"], env=env).start()
+    relays.append(relay)
+    try:
+        await relay.expect("connected to")
+        await asyncio.sleep(3)
+        session = bridge.sessions[0]
+        before = cpu_seconds(relay.proc.pid)
+        await proxy.freeze(3)
+        assert cpu_seconds(relay.proc.pid) - before < 0.3
+        await until(lambda: session.streaming and bridge.encoders >= 2, 10)
+        for _ in range(60):  # 6 s: past the 5 s idle ack, which let the old spin read again
+            assert session.streaming, "the bridge stalled again"
+            await asyncio.sleep(0.1)
+        assert bridge.encoders == 2
+        assert len(bridge.sessions) == 1
+    finally:
+        await proxy.stop()
+        await bridge.stop()
