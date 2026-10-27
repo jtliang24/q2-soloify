@@ -34,7 +34,7 @@ cp ~/Downloads/soloist_api.key . && chmod 600 soloist_api.key
 dc()  { docker compose -f compose.yaml -f compose.dev.yaml "$@"; }
 dch() { docker compose -f compose.yaml -f compose.dev.yaml -f compose.linux.yaml "$@"; }
 sw_vers -productVersion; docker version --format '{{.Server.Version}}'
-dc up -d --build
+dc up -d --build --wait
 dc exec -u soloify soloify sh -c 'uname -m; soloist --version'
 ```
 
@@ -46,11 +46,11 @@ Copy-Item $HOME\Downloads\soloist_api.key .
 function dc  { docker compose -f compose.yaml -f compose.dev.yaml @args }
 function dch { docker compose -f compose.yaml -f compose.dev.yaml -f compose.linux.yaml @args }
 [Environment]::OSVersion.Version; $env:PROCESSOR_ARCHITECTURE; docker version --format '{{.Server.Version}}'
-dc up -d --build
+dc up -d --build --wait
 dc exec -u soloify soloify sh -c 'uname -m; soloist --version'
 ```
 
-The repo holds only the x86_64 tarball, so on the Mac and on Windows ARM the entrypoint downloads the arm64 Linux build (`dc logs` shows "fetching Soloist"). `uname -m` should say `aarch64` there and `x86_64` on Windows x86.
+The repo holds only the x86_64 tarball, so on the Mac and on Windows ARM the entrypoint downloads the arm64 Linux build (`dc logs` shows "fetching Soloist"). `--wait` returns once Soloist is installed and PulseAudio answers, so the `exec` that follows finds both. `uname -m` should say `aarch64` there and `x86_64` on Windows x86.
 
 ## Pairing: try in order, stop at the first that works
 
@@ -61,7 +61,7 @@ To keep only the lines worth reporting from a log: on the Mac, `grep -E 'ready|Z
 **1. Host networking (Docker Desktop).**
 
 ```sh
-dch up -d
+dch up -d --wait
 dch exec -T -u soloify soloify soloist-run --pair -v > pair1.log 2>&1   # PowerShell: same line
 ```
 
@@ -71,7 +71,7 @@ While it waits, on the Mac only, run `dns-sd -B _spotify-connect._tcp` in a seco
 
 ```sh
 docker context use orbstack
-dch up -d --build
+dch up -d --build --wait
 dch exec -T -u soloify soloify soloist-run --pair -v > pair2.log 2>&1
 ```
 
@@ -101,7 +101,7 @@ $src = "data\native\soloist-state"
 Then copy (both systems; in PowerShell write `$src` the same way):
 
 ```sh
-dc up -d
+dc up -d --wait
 dc exec soloify rm -rf /data/soloist-state
 dc cp $src soloify:/data/soloist-state
 dc exec soloify sh -c 'chown -R soloify:soloify /data/soloist-state && chmod -R go-rwx /data/soloist-state'
@@ -113,7 +113,7 @@ dc exec soloify sh -c 'chown -R soloify:soloify /data/soloist-state && chmod -R 
 
 ```sh
 tar -xzf ~/Downloads/b3-state.tgz        # Windows: tar -xzf $HOME\Downloads\b3-state.tgz (tar.exe is built in)
-dc up -d
+dc up -d --wait
 dc exec soloify rm -rf /data/soloist-state
 dc cp soloist-state soloify:/data/soloist-state
 dc exec soloify sh -c 'chown -R soloify:soloify /data/soloist-state && chmod -R go-rwx /data/soloist-state'
@@ -121,7 +121,7 @@ dc exec soloify sh -c 'chown -R soloify:soloify /data/soloist-state && chmod -R 
 
 ## Play check (after whichever fallback paired)
 
-On the default network, as it will run day to day. If you paired with `dch`, go back with `dc up -d`; the volume keeps the session. In one window:
+On the default network, as it will run day to day. If you paired with `dch`, go back with `dc up -d --wait`; the volume keeps the session. In one window:
 
 ```sh
 dc exec -T -u soloify soloify soloist-run --ws 127.0.0.1:0 -v > play.log 2>&1

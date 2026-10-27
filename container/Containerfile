@@ -32,6 +32,10 @@ ENV PATH=/opt/soloify/bin:/data/soloist:$PATH \
     SOLOIST_API_KEY_FILE=/run/soloify/api.key
 
 VOLUME /data
+# Healthy once the entrypoint has fetched Soloist and PulseAudio answers: `compose up --wait`
+# returns only then, so a following exec finds both. It runs as root, so it names the socket
+HEALTHCHECK --interval=5s --timeout=5s --start-period=5m \
+    CMD test -x /data/soloist/soloist && PULSE_SERVER=unix:/run/soloify/pulse/native pactl info >/dev/null
 EXPOSE 7443
 ENTRYPOINT ["soloify-entrypoint"]
 CMD ["soloify", "serve"]
