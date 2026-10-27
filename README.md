@@ -1,6 +1,6 @@
 # q2-soloify
 
-Soloify plays Spotify on Q2 Pod devices (Shanling Q2, M1 Plus) through Spotify's own [Soloist](https://developer.spotify.com/documentation/soloist), for accounts librespot can't play. Soloist runs on a computer at home; the bridge here sends its audio to a relay on the device's card. See [PLAN.md](PLAN.md). Nothing plays yet: this is the development setup.
+Soloify plays Spotify on Q2 Pod devices (Shanling Q2, M1 Plus) through Spotify's own [Soloist](https://developer.spotify.com/documentation/soloist), for accounts librespot can't play. Soloist runs on a computer at home; the bridge here sends its audio to a relay on the device's card. See [PLAN.md](PLAN.md). So far it plays audio only (PLAN.md's step 1): no state, controls or browsing on the device yet.
 
 Spotify's terms forbid redistributing Soloist, so this repo never holds it. Each machine fetches its own build, and each user makes their own API key (with Spotify Premium). `.gitignore` keeps `soloist_release_*` and `*.key` out of git.
 
@@ -12,7 +12,12 @@ tools/soloist-fetch --cache .   # data/soloist/ from ./soloist_release_<arch>.ta
 soloist --version
 python -m pytest
 ruff check . && ruff format --check .
+python relay/build.py --rootfs ../q2-pod/build-m1/stock.squashfs   # build/relay/q2-soloify
 ```
+
+`relay/build.py --host` builds the relay for this machine, which the tests run against an in-process bridge. `--rootfs` builds it for the devices, linked like q2-pod's helpers against a stock rootfs's glibc 2.28 and OpenSSL 1.1.1f. `tests/test_relay_mips.py` runs that build under `qemu-mipsel`, decoding with the stock ffmpeg, when it finds q2-pod's `build-m1/stock.squashfs` beside this repo, or `$SOLOIFY_ROOTFS`.
+
+`soloify serve` runs Soloist into the `q2_soloify` null sink and serves its audio on 7443; `--source test` serves a beep each second instead, without Soloist. `soloify remote --lan ADDRESS --wan NAME` prints the card's `.soloify/remote`. The wire is in [docs/wire.md](docs/wire.md).
 
 The shell has Python with the bridge's dependencies (aiohttp, cryptography, pytest), ffmpeg, `pactl`/`parec`, PipeWire's tools, clang and ld.lld for the relay (q2-pod's MIPS helper recipe), `qemu-mipsel`, hadolint and docker-compose.
 
@@ -39,9 +44,12 @@ Pairing needs the phone's Spotify app on Soloist's LAN, but only once: a paired 
 
 | Path | What |
 | --- | --- |
-| `bridge/soloify/` | the bridge (Python); only `soloify --version` so far |
-| `tests/` | its tests |
+| `bridge/soloify/` | the bridge (Python): TLS listener, Soloist, audio |
+| `relay/` | the card's relay (C) and its build |
+| `card/` | the rest of the card's `.soloify/`: `aplay.sh`, `remote.sample`, `log.sh` |
+| `tests/` | the bridge's and the relay's tests |
 | `tools/soloist-fetch`, `tools/soloist-run`, `tools/soloify-sink` | fetch and run Soloist; the null sink and its level (POSIX sh, also used in the image) |
+| `tools/soloify-stall` | step 1's forced stall: blocks the bridge's port for a while (root) |
 | `container/` | `Containerfile`, `entrypoint`, `pulse.pa` |
 | `compose*.yaml` | the service; Linux host networking; development |
 | `flake.nix` | the dev shell and the `soloist` launcher, on q2-pod's nixpkgs revision |
