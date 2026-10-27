@@ -1,0 +1,9 @@
+# .soloify/remote: where the relay finds the bridge. On the bridge's machine run
+#   soloify remote --lan ADDRESS --wan NAME
+# and copy what it prints to .soloify/remote on the card. One endpoint a line, tried in order:
+#   HOST PORT TOKEN [sha256=PIN] [buffer=MS]
+# sha256= pins the bridge's own certificate; without it the bridge needs a real certificate for
+# HOST (Let's Encrypt, Tailscale Funnel). buffer= sets the relay's buffer: 1000 ms by default on
+# the LAN, 4000 ms beyond it. Delete remote to unpair. For example:
+# 192.168.1.10 7443 0123456789abcdef0123456789abcdef sha256=<64 hex digits>
+# home.example.net 7443 0123456789abcdef0123456789abcdef sha256=<64 hex digits> buffer=5000
