@@ -1,6 +1,6 @@
 # Soloify: Spotify through Soloist, as a Q2 Pod app
 
-Status: plan, approved 2026-10-26. Step 0 (server spikes) is done (2026-10-27, [docs/spikes.md](docs/spikes.md)); nothing else is implemented yet. Paths such as `patch/spotify.c`, `tools/build.py` or `docs/soloist.md` are in the q2-pod repo (`jtliang24/q2-pod`, branch `feature/m1plus-port`); the others are in this repo.
+Status: plan, approved 2026-10-26. Step 0 (server spikes) is done (2026-10-27, [docs/spikes.md](docs/spikes.md)). Step 1 (relay audio) is built and passed its M1 checks but the battery hour (2026-10-27, [docs/step1.md](docs/step1.md)); nothing else is implemented yet. Paths such as `patch/spotify.c`, `tools/build.py` or `docs/soloist.md` are in the q2-pod repo (`jtliang24/q2-pod`, branch `feature/m1plus-port`); the others are in this repo.
 
 ## Context
 
@@ -62,7 +62,8 @@ docs/         setup per OS, wire spec, troubleshooting
 ## 2. Relay (card): changes from the doc
 
 - Folder `.soloify/`, binary `q2-soloify`; the same `/tmp` contract as librespot.
-- `.soloify/remote`: one endpoint per line, `HOST PORT TOKEN [sha256=HEX]`, tried in order (LAN address first, then WAN), each with a short connect timeout. With `sha256=`, the relay pins the server's leaf certificate. Without it, the relay checks the name and the CA bundle.
+- `.soloify/remote`: one endpoint per line, `HOST PORT TOKEN [sha256=HEX] [buffer=MS]`, tried in order (LAN address first, then WAN), each with a short connect timeout. With `sha256=`, the relay pins the server's leaf certificate. Without it, the relay checks the name and the CA bundle.
+- **Delay and bitrate are the user's settings** (decided 2026-10-27, after step 1): the buffer target defaults to 1 s on the LAN and 4 s beyond it, and the bitrate to 160 kbit/s. A longer target means fewer dropouts on spotty Wi-Fi for more delay (step 1 measured the delay at the target or up to half a second more). Until the settings UI (section 5), `buffer=` and `soloify serve --bitrate` set them.
 - No `remote` file: the browse socket answers `error` with the message "Copy remote to .soloify (see the Soloify guide)", and Retry re-reads the file.
 - Everything else as in `docs/soloist.md` "The relay": local pause first, kill and reap the sink before writing a non-`playing` state, one buffer on the device, and pause Soloist after a stall longer than the buffer.
 
@@ -100,6 +101,7 @@ Every change sits behind an M1 seam (`#if M1PLUS` or a `patch/m1plus_*` include,
 
 - **Backend descriptor** (`patch/spotify.c`, the table in a new `patch/m1plus_spotify_backend.inc`): `{label, dir, bin, run, downloads, pair_note, pair_sub}` for Spotify (`.spotify`, `librespot`) and Soloify (`.soloify`, `q2-soloify`). `SPOT_DIR`, `SPOT_BIN` and `SPOT_RUN` (spotify.c lines 69–70, `peq.h:166`) read the current backend. `spot_open` takes the backend from its row argument. Opening the other backend runs `spot_stop()` first, so only one runs.
 - **Texts follow the backend:** the page title (`page_list(…, "Spotify", …)` at about lines 711, 714, 721), "X isn't running", "X didn't answer", "X isn't on the card", and the Now Playing notes (about lines 390–396). For Soloify, the pairing texts become "Pair Soloify on its server" / "Open Spotify near the server and choose Q2".
+- **Soloify's settings:** two rows for Soloify, beside Streaming Configuration's: Delay (the buffer target, 1 s by default on the LAN, 4 s beyond it; longer means fewer dropouts) and Quality (96, 128 or 160 kbit/s, 160 by default). The relay reads them when it connects; it applies the delay itself, and passes the bitrate to the bridge with its audio request, so the bridge's `--bitrate` becomes only the default. The wire change goes into `docs/wire.md` with step 3.
 - **Rows hidden for Soloify:** Downloaded Tracks, Download Playlist (about line 750), Sign Out, and Streaming Configuration's cache cap (`sc_dirs`, `navigation.c:5314`, stays Spotify's). For the upstream PR, generalise this to a `caps` reply, as the doc proposes.
 - **`SPOT_KILL`** (`peq.h:108`) also kills `q2-soloify`; the M1 copy goes in `patch/m1plus_peq.h`. Stop Streaming Services, Home's Rockbox row and `spot_stop` then cover both.
 - **Streaming row** (`ringnav_stream`, `navigation.c:6182`): "Soloify", after Spotify, only while `.soloify/q2-soloify` exists, opening `spot_open` with the Soloify backend. For now its icon reuses `stream_spotify.png`; a distinct icon waits for the aesthetics pass (all M1 functionality first, visual polish last).
@@ -121,7 +123,7 @@ Every change sits behind an M1 seam (`#if M1PLUS` or a `patch/m1plus_*` include,
 Test and commit after each item. One device flash with a checklist at the end: set Screen Off to Off for the pass and restore it after, drive the device through q2remote, and plan any fixes only after the pass is finished.
 
 0. **Spikes (server only).** Done 2026-10-27; results in [docs/spikes.md](docs/spikes.md). On NixOS: Soloist with `-d` into a null sink, and Soloist in the container with only PulseAudio (the local `soloist_release_x86_64.tar.gz` and `soloist_api.key`, both git-ignored). On the MacBook Air and on Windows x86 and ARM: the container plays, and the pairing fallbacks in order. Check: one pairing path per OS written down.
-1. **Relay audio + minimal bridge** (doc step 1): TLS with the pin, token, stock-ffmpeg decode, buffer and stall rule. Check, on the M1: home Wi-Fi and hotspot delay at target; a forced 15 s block pauses and resumes without growing delay; a network switch reconnects; an hour on battery. This sets the buffer targets and the bitrate A/B.
+1. **Relay audio + minimal bridge** (doc step 1): TLS with the pin, token, stock-ffmpeg decode, buffer and stall rule. Check, on the M1: home Wi-Fi and hotspot delay at target; a forced 15 s block pauses and resumes without growing delay; a network switch reconnects; an hour on battery. This sets the buffer targets and the bitrate A/B. Done but the battery hour (2026-10-27, [docs/step1.md](docs/step1.md)): delay about 1–1.5 s at the 1 s LAN target and 4 s on a hotspot; blocks and network switches recover by themselves; 96 and 160 kbit/s sound alike to the user. Defaults stay 1 s and 160 kbit/s, as settings (section 2).
 2. **Bridge core** (doc step 2) against a fake relay: a scripted cast, pause, seek, skip, track change and deactivate give the expected state lines and covers.
 3. **Relay contract** (doc step 3). Before any firmware change, test it in place of `.spotify/librespot` (back up the original first): the contract is identical, so the current Spotify page exercises it all, including Now Playing, keys, scrub, `spot_yield`/`spot_take`, idle stop, Stop Streaming Services and a crashed relay.
 4. **Browsing** (doc step 4): OAuth, every op, 429/401 against a fake Web API, and endpoint availability for development-mode apps.
