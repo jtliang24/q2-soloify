@@ -11,7 +11,7 @@ Soloist 1.3.10.16 (build 20261026, "client expires in 89 days"), the account the
 | NixOS native (PipeWire 1.6.6) | `-d q2_soloify` | LAN, with Soloist's ZeroConf port open in the firewall while pairing |
 | NixOS, Docker 29.9.1 | the container's PulseAudio, default sink | host networking (`compose.linux.yaml`) once, then the default NAT network; or a session copied in from another Linux machine |
 | macOS (Apple Silicon) | pending | pending |
-| Windows 11 x86_64 | pending | pending |
+| Windows 11 x86_64 (Docker Desktop 29.9.2) | the container's PulseAudio, default sink | a native Windows Soloist paired once, its session copied into the container; neither NAT nor host networking was listed |
 | Windows 11 ARM | pending | pending |
 
 ## Findings
@@ -27,6 +27,18 @@ Soloist 1.3.10.16 (build 20261026, "client expires in 89 days"), the account the
 - **The encoder line is fine.** 30 s of the sink through `docs/soloist.md`'s ffmpeg line (`tools/soloify-sink encode`): Ogg Opus, 48 kHz stereo, 166 kbit/s, and it sounded right.
 - **Footprint.** Natively, 69 MB RSS and 2.1% of one core a minute into playback, plus 12 MB for the crash reporter.
 - **`docker exec` runs with umask 0000.** A Soloist started through `exec` wrote its session world-writable; `tools/soloist-run` and the entrypoint now set `umask 077`.
+
+## Windows 11 x86_64
+
+Windows 11 Pro 10.0.26300, Docker Desktop 29.9.2, container `x86_64` with Soloist 1.3.10.18 (build 20261027). The Spotify desktop app runs on the same machine; every "listed or not" check below was made in that app, and no phone was used for discovery. Run from [step0-runbook.md](step0-runbook.md).
+
+- **Fallback 1, host networking: Q2 not listed.** Not on the default NAT network (ZeroConf started on port 35993), and not after turning on Docker Desktop's "Enable host networking" (port 58861). The engine restart that setting needs kills a running container.
+- **Fallback 3, native Soloist: paired.** The x86_64 Windows build from `soloist-builds.spotifycdn.com` listed Q2 in the desktop app at once; `getInfo`, then `addUser`, then `pairing complete, credentials stored` and `logged in`, 24 s after `ready`. No firewall prompt was reported.
+- **The copied session works.** `dc cp` of `soloist-state` into the volume, then `chown` and `chmod`, and the container's Soloist logged in from it (`logged in: yes`).
+- **Play check passed on the default network.** `play` then `now`: `playing | 0:03 / 3:55 | vol 40%`; `level`: `mean_volume -21.5 dB`, `max_volume -3.8 dB` after `volume 100`; the PC's speakers stayed silent ("Using PulseAudio"). Q2 showed as the playing device in Spotify, and a skip (Crave to Ribs) and a pause from there reached Soloist (its log shows `Pause track`).
+- **Restarting a stopped container can fail.** After the first container was killed (exit 137, as Docker Desktop restarted), `docker compose up -d` started it again but `pulseaudio` died with "Daemon startup failed" and the entrypoint exited 1. `up -d --force-recreate` fixed it. The writable layer's leftover PulseAudio files are the likely cause, untested; the entrypoint may need to clear them.
+- **A race on first start.** `soloist` isn't on the PATH until the entrypoint finishes fetching it, so a `dc exec` straight after `dc up -d` can print `soloist: not found`.
+- **Not tested here:** fallback 4 (no `b3-state.tgz` on this machine) and whether a phone lists Q2 under host networking.
 
 ## For later steps
 
