@@ -10,7 +10,7 @@ Soloist 1.3.10.16 (build 20261026, "client expires in 89 days"), the account the
 | --- | --- | --- |
 | NixOS native (PipeWire 1.6.6) | `-d q2_soloify` | LAN, with Soloist's ZeroConf port open in the firewall while pairing |
 | NixOS, Docker 29.9.1 | the container's PulseAudio, default sink | host networking (`compose.linux.yaml`) once, then the default NAT network; or a session copied in from another Linux machine |
-| macOS (Apple Silicon) | pending | pending |
+| macOS 26.5.2 (Apple Silicon, Docker Desktop 29.9.2) | the container's PulseAudio, default sink | a native macOS Soloist paired once from the phone, its session copied into the container; host networking can't bind port 5353 |
 | Windows 11 x86_64 (Docker Desktop 29.9.2) | the container's PulseAudio, default sink | a native Windows Soloist paired once, its session copied into the container; neither NAT nor host networking was listed |
 | Windows 11 ARM | pending | pending |
 
@@ -39,6 +39,18 @@ Windows 11 Pro 10.0.26300, Docker Desktop 29.9.2, container `x86_64` with Solois
 - **Restarting a stopped container can fail.** After the first container was killed (exit 137, as Docker Desktop restarted), `docker compose up -d` started it again but `pulseaudio` died with "Daemon startup failed" and the entrypoint exited 1. `up -d --force-recreate` fixed it. The cause, reproduced on NixOS: `/run/soloify` is in the writable layer, so a killed run leaves PulseAudio's `pulse/pid` and socket there. Fixed: the entrypoint removes `$XDG_RUNTIME_DIR/pulse` before starting it.
 - **A race on first start.** `soloist` isn't on the PATH until the entrypoint finishes fetching it, so a `dc exec` straight after `dc up -d` can print `soloist: not found`. Fixed: the image's `HEALTHCHECK` passes once Soloist is installed and PulseAudio answers, and the runbook uses `up -d --wait`.
 - **Not tested here:** fallback 4 (no `b3-state.tgz` on this machine) and whether a phone lists Q2 under host networking.
+
+## macOS 26.5.2 (Apple Silicon)
+
+MacBook Air, Docker Desktop 4.97 (server 29.9.2), container `aarch64` with Soloist 1.3.10.18 (build 20261027), which the entrypoint fetched; the native build is the `macos/aarch64` one from `tools/soloist-fetch`. Pairing and the play check used Spotify on a phone on the same Wi-Fi. Run from [step0-runbook.md](step0-runbook.md).
+
+- **Fallback 1, host networking: not usable.** Docker Desktop reported `Host Networking: failed to bind port 5353 on the host`. UDP 5353 is mDNS; on this Mac `lsof` showed a `synergy-s` process on it, and macOS's own responder normally holds it too. The container's Soloist started (ZeroConf port 65095) but the phone didn't list Q2. `dns-sd` wasn't run.
+- **Fallback 2, OrbStack: skipped.** Not installed; fallback 3 was chosen instead.
+- **Fallback 3, native Soloist: paired from the phone.** `getInfo` (several times), `addUser`, then `pairing complete, credentials stored` and `logged in`, 28 s after `ready`. Whether macOS showed a firewall prompt wasn't reported.
+- **The copied session works.** `dc cp` of `data/native/soloist-state` into the volume, `chown` and `chmod`, and the container's Soloist logged in from it (`logged in: yes`).
+- **Play check passed on the default network.** `now`: `playing | 0:03 / 3:55 | vol 40%`; `level`: `mean_volume -21.4 dB`, `max_volume -3.9 dB` after `volume 100`; the Mac's speakers stayed silent. Q2 showed as the playing device on the phone, and pause and skip from there worked.
+- **Not tested here:** fallback 4, and the Spotify desktop app as a pairing client.
+- **Setup notes:** macOS has no `timeout`, so a bounded pairing run needs `perl -e 'alarm N; exec @ARGV'`. An older Docker Desktop (4.12) had to be replaced first; the runbook's 4.34 minimum is real.
 
 ## For later steps
 
