@@ -1,8 +1,8 @@
 # Step 0: server spikes
 
-PLAN.md step 0, before any bridge or relay code. For each host: does Soloist's audio land in the `q2_soloify` null sink, and only there, and which pairing path works? Results so far are on the NixOS laptop. The MacBook Air and the Windows machines follow [step0-runbook.md](step0-runbook.md).
+PLAN.md step 0, before any bridge or relay code. For each host: does Soloist's audio land in the `q2_soloify` null sink, and only there, and which pairing path works? Done on all five hosts by 2026-10-27: the NixOS laptop, then the MacBook Air and the two Windows machines by hand from [step0-runbook.md](step0-runbook.md).
 
-Soloist 1.3.10.16 (build 20261026, "client expires in 89 days"), the account the user plays from, a phone on the same Wi-Fi. `soloist ctl -D <data>/soloist-state activate` then `play URI` drives a paired Soloist without the phone; `tools/soloify-sink level` reads the sink's monitor (silence is -91 dB).
+Soloist 1.3.10.16 (build 20261026, "client expires in 89 days") on NixOS; the other hosts fetched 1.3.10.18 (build 20261027) a day later. The account the user plays from, a phone on the same Wi-Fi. `soloist ctl -D <data>/soloist-state activate` then `play URI` drives a paired Soloist without the phone; `tools/soloify-sink level` reads the sink's monitor (silence is -91 dB).
 
 ## Summary
 
@@ -13,6 +13,8 @@ Soloist 1.3.10.16 (build 20261026, "client expires in 89 days"), the account the
 | macOS 26.5.2 (Apple Silicon, Docker Desktop 29.9.2) | the container's PulseAudio, default sink | a native macOS Soloist paired once from the phone, its session copied into the container; host networking can't bind port 5353 |
 | Windows 11 x86_64 (Docker Desktop 29.9.2) | the container's PulseAudio, default sink | a native Windows Soloist paired once, its session copied into the container; neither NAT nor host networking was listed |
 | Windows 11 ARM (Docker Desktop 29.9.2) | the container's PulseAudio, default sink | a native Windows Soloist (x86_64 emulated) paired once, its session copied into the container; host networking was not listed |
+
+**One path works on every host.** On Linux, pair natively or in the container on host networking, with the firewall open to Soloist's ZeroConf port for that run. On macOS and Windows, pair a native Soloist once (from the phone or the Spotify desktop app on the same machine) and copy its `soloist-state/` into the container's volume. Docker Desktop's host networking never listed Q2: on the Mac it can't bind UDP 5353, and on Windows the container's mDNS doesn't reach the LAN. A session moves between Linux, macOS and Windows, and once paired the container runs on the default NAT network, controlled through Spotify's cloud.
 
 ## Findings
 
@@ -65,5 +67,7 @@ MacBook Air, Docker Desktop 4.97 (server 29.9.2), container `aarch64` with Soloi
 ## For later steps
 
 - Bridge audio (step 1): `-d q2_soloify` when PipeWire is running, `PULSE_SINK=q2_soloify` on a PulseAudio host, nothing in the container.
-- Setup docs (step 6): pair once (host networking or a native run, the firewall open for that run's port), then run on any network; or pair anywhere and copy `soloist-state/`. `soloify pair` could print the port to open.
+- Pairing tool (step 6): `soloify pair`. On macOS and Windows (sh and PowerShell), it fetches the native build, runs `--pair`, and copies `soloist-state/` into the volume. On Linux, it pairs natively or on host networking and prints the ZeroConf port to open.
+- Setup docs (step 6): Docker Desktop 4.34 or later. Skip host networking on macOS and Windows. The Spotify desktop app on the same machine counts as a pairing client. Never run two copies of one session.
+- Soloist manager (step 2): builds change often (1.3.10.16 to 1.3.10.18 within a day), each with its own 90-day expiry; the planned refresh from the fixed URL covers it.
 - Podman wasn't tested (not installed); it moves to step 7.
