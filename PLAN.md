@@ -1,6 +1,6 @@
 # Soloify: Spotify through Soloist, as a Q2 Pod app
 
-Status: plan, approved 2026-10-26; nothing implemented yet. Paths such as `patch/spotify.c`, `tools/build.py` or `docs/soloist.md` are in the q2-pod repo (`jtliang24/q2-pod`, branch `feature/m1plus-port`); the others are in this repo.
+Status: plan, approved 2026-10-26. Step 0 (server spikes) is done (2026-10-27, [docs/spikes.md](docs/spikes.md)); nothing else is implemented yet. Paths such as `patch/spotify.c`, `tools/build.py` or `docs/soloist.md` are in the q2-pod repo (`jtliang24/q2-pod`, branch `feature/m1plus-port`); the others are in this repo.
 
 ## Context
 
@@ -69,7 +69,7 @@ docs/         setup per OS, wire spec, troubleshooting
 ## 3. Bridge (server)
 
 - **Soloist manager.** Picks the build by `uname -m`, downloads it to `data/soloist/`, reads `--version` for the build date, and replaces it from the same URL when under 14 days are left, or at once after exit 10. It restarts Soloist on exit with a backoff. It runs `-n Q2` (configurable), `-D data/soloist-state`, `-C data/cache`, `-z 100`, `-i 100` and `--ws 127.0.0.1:0`, then reads `ws.port` from the data directory.
-- **Audio.** Native Linux with PipeWire: `pactl load-module module-null-sink sink_name=q2_soloify …` and Soloist with `-d q2_soloify`. Container: a private PulseAudio daemon (`--exit-idle-time=-1`, null sink as default, no host audio). Soloist falls back to PulseAudio when PipeWire can't start. The encoder is the doc's ffmpeg line, started per relay audio request and stopped on pause or disconnect, so nothing queues. Unset `LD_LIBRARY_PATH` for nixpkgs ffmpeg.
+- **Audio.** Native Linux with PipeWire: `pactl load-module module-null-sink sink_name=q2_soloify …` and Soloist with `-d q2_soloify`. Container: a private PulseAudio daemon (`--exit-idle-time=-1`, null sink as default, no host audio). Soloist falls back to PulseAudio when PipeWire can't start. On PipeWire only `-d` routes it (`PULSE_SINK` is ignored); on a PulseAudio host, `PULSE_SINK=q2_soloify` does (step 0). The encoder is the doc's ffmpeg line, started per relay audio request and stopped on pause or disconnect, so nothing queues. Unset `LD_LIBRARY_PATH` for nixpkgs ffmpeg.
 - **TLS.** On first run it generates an ECDSA P-256 self-signed certificate. `soloify remote [--lan IP] [--wan HOST]` prints the `remote` file with the token and `sha256=`. An optional `--cert/--key` (Let's Encrypt or Funnel) drops the pin.
 - **Web API.** `soloify login` runs PKCE through a loopback redirect, and keeps the refresh token in the data directory. Before relying on each endpoint in the Q2SPOT/1 table, check it on a development-mode app: Spotify has restricted some for new apps, and editorial or algorithmic playlists may answer `unavailable`.
 - **Secrets.** The API key and token come from `data/config.toml` (mode 0600) or the container's secret or env file, and never go into logs.
@@ -78,14 +78,20 @@ docs/         setup per OS, wire spec, troubleshooting
 
 | Host | How | Soloist build | Pairing |
 | --- | --- | --- | --- |
-| Linux (NixOS dev box, Pi, any distro) | native: Nix flake / NixOS module, or pipx + systemd user unit; or the container with `network_mode: host` | x86_64 / arm64 / arm32 | LAN, as tested |
-| macOS (Apple Silicon) | Docker Desktop, OrbStack or `podman machine`; compose file | Linux arm64 in the VM | **risk**: VM NAT may block discovery (step 0) |
-| Windows 11 x86_64 | Docker Desktop (WSL2) or Podman Desktop | Linux x86_64 | same risk |
-| Windows 11 ARM | Docker Desktop for ARM, arm64 Linux containers | Linux arm64 (Windows' own build is x86_64 only) | same risk |
+| Linux (NixOS dev box, Pi, any distro) | native: Nix flake / NixOS module, or pipx + systemd user unit; or the container with `network_mode: host` | x86_64 / arm64 / arm32 | LAN, native or the container on host networking once, with the firewall open to Soloist's random ZeroConf port for that run |
+| macOS (Apple Silicon) | Docker Desktop, OrbStack or `podman machine`; compose file | Linux arm64 in the VM | native macOS Soloist paired once, its session copied into the container (host networking can't bind UDP 5353) |
+| Windows 11 x86_64 | Docker Desktop (WSL2) or Podman Desktop | Linux x86_64 | native Windows Soloist paired once, its session copied in (host networking not listed) |
+| Windows 11 ARM | Docker Desktop for ARM, arm64 Linux containers | Linux arm64 (Windows' own build is x86_64 only) | the same, with the x86_64 build under Windows' emulation |
 
 - One multi-arch image (`linux/amd64`, `linux/arm64`, `linux/arm/v7`) published to GHCR. Soloist is never in the image: it is downloaded into the volume at start.
 - `compose.yaml` works with `docker compose` and `podman compose`. It has one published TLS port, a named volume for `data/`, and a `.env` for the key.
-- **Pairing fallbacks to test in step 0, in order:** (1) host networking (Docker Desktop 4.34+ for Mac and Windows; Linux always); (2) OrbStack on the Mac; (3) pair once with the *native* macOS or Windows Soloist (`soloist -p -n Q2 -D <dir>`), then mount that data directory into the container, if the stored session carries over between platforms; (4) pair with the container on a Linux box and copy the data directory. Whichever works becomes the documented path for that OS.
+- **Pairing fallbacks to test in step 0, in order:** (1) host networking (Docker Desktop 4.34+ for Mac and Windows; Linux always); (2) OrbStack on the Mac; (3) pair once with the *native* macOS or Windows Soloist (`soloist -p -n Q2 -D <dir>`), then mount that data directory into the container, if the stored session carries over between platforms; (4) pair with the container on a Linux box and copy the data directory. Whichever works becomes the documented path for that OS. **Result** ([docs/spikes.md](docs/spikes.md)):
+  - (1) failed on every Docker Desktop host.
+  - (2) wasn't tried.
+  - (3) works on macOS, Windows x86 and Windows ARM: a session moves between platforms.
+  - (4) works from Linux to Linux.
+
+  Once paired, the container runs on the default network, controlled through Spotify's cloud.
 - Mac or Windows as a server: it has to stay awake (no sleep on AC), and macOS's firewall prompt must allow the port. Document both.
 
 ## 5. Firmware (q2-pod): Soloify row on the shared page
@@ -114,13 +120,13 @@ Every change sits behind an M1 seam (`#if M1PLUS` or a `patch/m1plus_*` include,
 
 Test and commit after each item. One device flash with a checklist at the end: set Screen Off to Off for the pass and restore it after, drive the device through q2remote, and plan any fixes only after the pass is finished.
 
-0. **Spikes (server only).** On NixOS: Soloist with `-d` into a null sink, and Soloist in the container with only PulseAudio (the local `soloist_release_x86_64.tar.gz` and `soloist_api.key`, both git-ignored). On the MacBook Air and on Windows x86 and ARM: the container plays, and the pairing fallbacks in order. Check: one pairing path per OS written down.
+0. **Spikes (server only).** Done 2026-10-27; results in [docs/spikes.md](docs/spikes.md). On NixOS: Soloist with `-d` into a null sink, and Soloist in the container with only PulseAudio (the local `soloist_release_x86_64.tar.gz` and `soloist_api.key`, both git-ignored). On the MacBook Air and on Windows x86 and ARM: the container plays, and the pairing fallbacks in order. Check: one pairing path per OS written down.
 1. **Relay audio + minimal bridge** (doc step 1): TLS with the pin, token, stock-ffmpeg decode, buffer and stall rule. Check, on the M1: home Wi-Fi and hotspot delay at target; a forced 15 s block pauses and resumes without growing delay; a network switch reconnects; an hour on battery. This sets the buffer targets and the bitrate A/B.
 2. **Bridge core** (doc step 2) against a fake relay: a scripted cast, pause, seek, skip, track change and deactivate give the expected state lines and covers.
 3. **Relay contract** (doc step 3). Before any firmware change, test it in place of `.spotify/librespot` (back up the original first): the contract is identical, so the current Spotify page exercises it all, including Now Playing, keys, scrub, `spot_yield`/`spot_take`, idle stop, Stop Streaming Services and a crashed relay.
 4. **Browsing** (doc step 4): OAuth, every op, 429/401 against a fake Web API, and endpoint availability for development-mode apps.
 5. **Firmware seams** (section 5) on a branch off q2-pod's `feature/m1plus-port`: build with `nix develop -c python3 tools/build.py …`, the M1 suites, `test/q2compare.py`, then `graphify update .`.
-6. **Packaging:** card ZIP, GHCR multi-arch image, compose, Nix flake/module, `soloify remote`, per-OS setup docs.
+6. **Packaging:** card ZIP, GHCR multi-arch image, compose, Nix flake/module, `soloify remote`, `soloify pair` (step 0's pairing path per OS), per-OS setup docs.
 7. **Cross-platform runs:** NixOS native and Podman, macOS Docker, Windows x86 and ARM Docker, each playing to the M1 for 10 min with skip, seek and pause.
 8. **Device pass on the M1** (one dev flash): the Apps row installs, updates and removes; the Streaming row; the full Spotify-page checklist with the Soloify backend; switching Spotify ⇄ Soloify; hidden rows; Bluetooth not applicable (Wi-Fi). Restore settings, then plan any fixes separately.
 9. **Upstream PR** (Q2): the seams without guards, plus `caps`, offered to DiamondBond/q2-pod. A Q2 device check if one is available.
