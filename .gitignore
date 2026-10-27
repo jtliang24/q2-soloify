@@ -4,6 +4,8 @@ soloist_release_*
 # local state: Soloist, its session, the bridge's certificate and token
 data/
 .env
+# Soloist logs from pairing and play runs: account ids, device ids, LAN addresses
+*.log
 # Python and Nix
 __pycache__/
 *.egg-info/
