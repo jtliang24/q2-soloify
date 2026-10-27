@@ -16,6 +16,7 @@ log = logging.getLogger("soloify")
 FRAME_MS = 20
 # The relay sends an ack at least every 5 s (docs/wire.md); silence this long means it's gone
 IDLE_TIMEOUT = 20
+MIN_INFLIGHT_MS = 300
 # A 100 ms 1 kHz beep each second, in real time: latency and stall tests without Soloist
 TEST_SOURCE = [
     *("-re", "-readrate_initial_burst", "0", "-f", "lavfi", "-i"),
@@ -160,6 +161,7 @@ class Session:
                 kind, payload = await asyncio.wait_for(wire.read_frame(reader), IDLE_TIMEOUT)
                 if kind == wire.AUDIO_REQUEST:
                     if payload.startswith(b"1"):
+                        self.target(payload)
                         await self.want()
                     else:
                         await self.halt(payload[2:].decode(errors="replace") or "stop")
@@ -176,6 +178,14 @@ class Session:
             await self.halt("gone")
             if self.pump:
                 await asyncio.wait([self.pump], timeout=5)
+
+    def target(self, payload: bytes) -> None:
+        """`A 1 MS` carries the relay's buffer target, which is also the in-flight limit: a stall
+        longer than the relay's buffer pauses Soloist, and leaves a backlog of one buffer."""
+        try:
+            self.limit = max(int(payload[2:]), MIN_INFLIGHT_MS)
+        except ValueError:
+            pass
 
     async def want(self) -> None:
         if self.streaming or self.halting:
