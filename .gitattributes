@@ -1,0 +1,3 @@
+# LF everywhere: the entrypoint and tools/* run under sh in the container, also when the
+# repo is checked out on Windows.
+* text=auto eol=lf
