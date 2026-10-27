@@ -7,7 +7,7 @@ import struct
 
 VERSION = 1
 OK = b"ok %d\n" % VERSION
-# The largest frame either side accepts: a cover JPEG (step 2) is the biggest
+# The largest frame either side accepts: a cover JPEG is the biggest
 MAX_FRAME = 1 << 20
 HELLO_MAX = 256
 
@@ -15,8 +15,11 @@ HELLO_MAX = 256
 AUDIO_REQUEST = b"A"  # b"1" to start, b"0 pause" or b"0 stall" to stop
 ACK = b"k"  # u32: audio packets received since the hello
 STATS = b"t"  # text, logged
+CONTROL = b"c"  # a control datagram from Q2 Pod: p, P, s, n, b or S<ms>
 # bridge -> relay
 AUDIO = b"a"  # u32 sequence, then one Opus packet
+STATE = b"s"  # the status file's key=value lines, less at=
+COVER = b"j"  # a track id, a newline, then the track's cover JPEG
 
 _HEAD = struct.Struct(">cI")
 
@@ -50,6 +53,10 @@ def hello_ok(line: bytes, token: str) -> bool:
 
 def audio(seq: int, packet: bytes) -> bytes:
     return frame(AUDIO, struct.pack(">I", seq & 0xFFFFFFFF) + packet)
+
+
+def cover(track_id: str, jpeg: bytes) -> bytes:
+    return frame(COVER, track_id.encode() + b"\n" + jpeg)
 
 
 def ack_count(payload: bytes) -> int:

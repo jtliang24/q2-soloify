@@ -3,6 +3,7 @@ import ssl
 import struct
 
 from soloify import audio, server, wire
+from soloify.player import Player
 
 
 def _page(segments: list[bytes], lacing: list[int]) -> bytes:
@@ -38,17 +39,18 @@ class FakeEncoder:
 
 
 class FakeSoloist:
-    def __init__(self, playing=True):
-        self.is_playing = playing
+    """Soloist's WebSocket, as far as the stall rule goes: play and pause change its status."""
+
+    def __init__(self):
         self.calls = []
+        self.player = None
 
-    async def playing(self):
-        return self.is_playing
-
-    async def ctl(self, *args):
-        self.calls.append(args)
-        self.is_playing = args[0] == "play"
-        return ""
+    async def command(self, name, **fields):
+        self.calls.append((name,))
+        self.player.event(
+            {"type": "playback_changed", "status": name + ("ing" if name == "play" else "d")}
+        )
+        return True
 
 
 class FakeWriter:
@@ -57,7 +59,8 @@ class FakeWriter:
         self.closed = False
 
     def write(self, data):
-        self.frames.append(data)
+        if data[:1] == wire.AUDIO:  # the player's state frames aren't these tests' business
+            self.frames.append(data)
 
     def is_closing(self):
         return self.closed
@@ -70,12 +73,15 @@ async def _settle():
 
 class Rig:
     def __init__(self, limit=100, playing=True):
-        audio.Player.PAUSE_SETTLE = 0
-        self.soloist = FakeSoloist(playing)
+        Player.PAUSE_SETTLE = 0
+        self.soloist = FakeSoloist()
+        player = self.soloist.player = Player(self.soloist)
+        player.event({"type": "auth_state", "logged_in": True, "is_active": True})
+        player.event({"type": "playback_changed", "status": "playing" if playing else "paused"})
         self.encoders = []
         self.writer = FakeWriter()
         self.reader = asyncio.StreamReader()
-        self.session = audio.Session(audio.Player(self.soloist), self._encoder, limit)
+        self.session = audio.Session(player, self._encoder, limit)
         self.task = asyncio.create_task(self.session.run(self.reader, self.writer))
 
     def _encoder(self):
@@ -154,7 +160,7 @@ async def test_relay_gone_pauses():
 async def test_beep_over_tls_stalls_and_resumes(tmp_path):
     """The real encoder with the test source, through the TLS listener."""
     identity = server.Identity.load(tmp_path)
-    player = audio.Player(None)
+    player = Player()
 
     def encoder():
         return audio.Encoder(audio.ffmpeg_args("test", 160))
@@ -178,6 +184,7 @@ async def test_beep_over_tls_stalls_and_resumes(tmp_path):
 async def _beep_stall_and_resume(identity, reader, writer):
     writer.write(b"hello 1 %s\n" % identity.token.encode() + wire.frame(wire.AUDIO_REQUEST, b"1"))
     assert await reader.readline() == wire.OK
+    assert await wire.read_frame(reader) == (wire.STATE, b"state=none\n")  # the test source's
     # No acks: the stall stops the encoder once 400 ms are in flight; ffmpeg's flush adds some
     seqs = []
     while True:

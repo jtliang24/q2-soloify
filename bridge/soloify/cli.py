@@ -5,10 +5,12 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 
-from . import __version__, audio, server, soloist
+from . import __version__, audio, server, soloist, ws
+from .player import Covers, Player
 
 PORT = 7443
 
@@ -16,13 +18,16 @@ PORT = 7443
 async def serve(args: argparse.Namespace) -> int:
     identity = server.Identity.load(args.data)
     tasks = []
+    covers = Covers()
     if args.source == "test":
-        player = audio.Player(None)
+        player = Player()
     else:
         await soloist.ensure_sink()
-        solo = soloist.Soloist(args.data, args.key)
-        player = audio.Player(solo)
-        tasks.append(asyncio.create_task(solo.run()))
+        solo = soloist.Soloist(args.data, args.key, args.name)
+        player = Player(cover=covers.get)
+        link = player.ws = ws.SoloistWS(solo.port_file, player.event)
+        tasks.append(asyncio.create_task(solo.run(idle=lambda: not player.state.playing)))
+        tasks.append(asyncio.create_task(link.run()))
 
     def encoder() -> audio.Encoder:
         return audio.Encoder(audio.ffmpeg_args(args.source, args.bitrate))
@@ -38,9 +43,32 @@ async def serve(args: argparse.Namespace) -> int:
         args.source,
         args.bitrate,
     )
-    async with listener:
-        await listener.serve_forever()
-    return 0
+    # SIGTERM (systemd, docker stop) and SIGINT end Soloist with the bridge, never orphan it; so
+    # does a failed Soloist (no build, and none to download)
+    main, failed = asyncio.current_task(), []
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, main.cancel)
+
+    def ended(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception():
+            server.log.error("stopping: %s", task.exception())
+            failed.append(task)
+            main.cancel()
+
+    for task in tasks:
+        task.add_done_callback(ended)
+    try:
+        async with listener:
+            await listener.serve_forever()
+    except asyncio.CancelledError:
+        server.log.info("stopping")
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await covers.close()
+    return 1 if failed else 0
 
 
 def remote(args: argparse.Namespace) -> int:
@@ -63,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("serve", help="run Soloist and the bridge")
     p.add_argument("--listen", default=None, help="address to listen on (default all)")
     p.add_argument("--port", type=int, default=PORT)
+    p.add_argument("--name", default="Q2", help="Soloist's Spotify Connect name (default Q2)")
     p.add_argument("--bitrate", type=int, choices=(96, 128, 160), default=160, help="kbit/s")
     p.add_argument(
         "--inflight", type=int, default=2000, help="ms of unacked audio that make a stall"

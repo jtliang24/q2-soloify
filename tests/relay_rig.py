@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from soloify import audio, server
+from soloify.player import Player
 
 ROOT = Path(__file__).resolve().parent.parent
 _built: Path | None = None
@@ -61,7 +62,7 @@ class Bridge:
         return SlowEncoder(audio.ffmpeg_args("test", 160), self.start_delay)
 
     async def _session(self, reader, writer):
-        s = audio.Session(audio.Player(None), self._encoder, self.inflight)
+        s = audio.Session(Player(), self._encoder, self.inflight)
         self.sessions.append(s)
         await s.run(reader, writer)
 

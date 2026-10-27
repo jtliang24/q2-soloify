@@ -9,7 +9,8 @@ import struct
 from collections.abc import AsyncIterator, Callable
 
 from . import wire
-from .soloist import SINK, Soloist
+from .player import Player
+from .soloist import SINK
 
 log = logging.getLogger("soloify")
 
@@ -109,32 +110,10 @@ class Encoder:
                 self.proc.kill()
 
 
-class Player:
-    """What every relay connection shares: Soloist, and whether the bridge paused it (so it resumes
-    only what it paused itself, never what the user paused)."""
-
-    PAUSE_SETTLE = 0.3
-
-    def __init__(self, soloist: Soloist | None):
-        self.soloist = soloist
-        self.paused_by_us = False
-
-    async def pause(self) -> None:
-        if self.soloist and not self.paused_by_us and await self.soloist.playing():
-            await self.soloist.ctl("pause")
-            self.paused_by_us = True
-            # The encoder runs on until Soloist has stopped, so no audio is lost between the two
-            await asyncio.sleep(self.PAUSE_SETTLE)
-
-    async def resume(self) -> None:
-        if self.soloist and self.paused_by_us:
-            self.paused_by_us = False
-            await self.soloist.ctl("play")
-
-
 class Session:
-    """One relay's audio: an encoder while the relay asks for audio, stopped when unacked audio goes
-    over the in-flight limit (a stall), on `A 0`, or when the relay goes."""
+    """One relay's connection: its controls go to the player, which sends it the state and covers;
+    and its audio, an encoder while the relay asks for audio, stopped when unacked audio goes over
+    the in-flight limit (a stall), on `A 0`, or when the relay goes."""
 
     def __init__(self, player: Player, encoder: Callable[[], Encoder], inflight_ms: int):
         self.player = player
@@ -156,6 +135,7 @@ class Session:
 
     async def run(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.writer = writer
+        self.player.attach(writer)
         try:
             while True:
                 kind, payload = await asyncio.wait_for(wire.read_frame(reader), IDLE_TIMEOUT)
@@ -167,6 +147,8 @@ class Session:
                         await self.halt(payload[2:].decode(errors="replace") or "stop")
                 elif kind == wire.ACK:
                     self.acked = wire.ack_count(payload)
+                elif kind == wire.CONTROL:
+                    await self.player.control(payload)
                 elif kind == wire.STATS:
                     log.info(
                         "relay: %s inflight=%d",
@@ -174,6 +156,7 @@ class Session:
                         self.inflight_ms(),
                     )
         finally:
+            self.player.detach(writer)
             # A relay gone is a stall: Soloist shouldn't play to nobody
             await self.halt("gone")
             if self.pump:
