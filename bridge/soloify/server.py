@@ -106,10 +106,12 @@ class Server:
                 return
             writer.write(wire.OK)
             await writer.drain()
-            if self.current:
+            old, self.current = self.current, asyncio.current_task()
+            if old:
+                # The old session pauses Soloist as it ends; let it finish before this one resumes
                 log.info("relay %s replaces the current one", peer)
-                self.current.cancel()
-            self.current = asyncio.current_task()
+                old.cancel()
+                await asyncio.wait([old])
             log.info("relay %s connected", peer)
             await self.session(reader, writer)
         except (TimeoutError, OSError, ssl.SSLError, asyncio.IncompleteReadError) as e:
