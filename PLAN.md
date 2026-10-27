@@ -1,6 +1,6 @@
 # Soloify: Spotify through Soloist, as a Q2 Pod app
 
-Status: plan, approved 2026-10-26. Step 0 (server spikes) is done (2026-10-27, [docs/spikes.md](docs/spikes.md)). Step 1 (relay audio) is built and passed its M1 checks but the battery hour (2026-10-27, [docs/step1.md](docs/step1.md)). Step 2 (bridge core) is done (2026-10-27, [docs/step2.md](docs/step2.md)); nothing else is implemented yet. Paths such as `patch/spotify.c`, `tools/build.py` or `docs/soloist.md` are in the q2-pod repo (`jtliang24/q2-pod`, branch `feature/m1plus-port`); the others are in this repo.
+Status: plan, approved 2026-10-26. Step 0 (server spikes) is done (2026-10-27, [docs/spikes.md](docs/spikes.md)). Step 1 (relay audio) is built and passed its M1 checks but the battery hour (2026-10-27, [docs/step1.md](docs/step1.md)). Step 2 (bridge core) is done (2026-10-27, [docs/step2.md](docs/step2.md)); nothing else is implemented yet. From 2026-10-27 the development network blocks peer-to-peer traffic, so the laptop can't reach the M1 (no q2remote, no LAN link to the bridge): work that needs no device goes first, and the battery hour and step 3's device check wait for home Wi-Fi, or the laptop and the M1 both on the phone's hotspot. Paths such as `patch/spotify.c`, `tools/build.py` or `docs/soloist.md` are in the q2-pod repo (`jtliang24/q2-pod`, branch `feature/m1plus-port`); the others are in this repo.
 
 ## Context
 
@@ -49,6 +49,7 @@ card/         run (restart loop, pid in /tmp/q2-librespot, 5 s → 60 s backoff)
               remote.sample, README for the card (no q2app: it isn't an addon.c card app)
 bridge/       soloify/ (Python 3.12, asyncio): soloist.py (download, verify arch, expiry refresh,
               supervise), audio.py (sink + per-connection ffmpeg), ws.py (Soloist WebSocket),
+              state.py (events → status lines), player.py (state, covers, controls, stall pause),
               webapi.py (OAuth PKCE, refresh token in data dir), q2spot.py (ops table), wire.py,
               server.py (TLS listener, token, cert generation), cli.py (`soloify serve|login|remote`)
 container/    Containerfile (debian-slim: pulseaudio, ffmpeg, python), entrypoint, compose.yaml
@@ -69,7 +70,7 @@ docs/         setup per OS, wire spec, troubleshooting
 
 ## 3. Bridge (server)
 
-- **Soloist manager.** Picks the build by `uname -m`, downloads it to `data/soloist/`, reads `--version` for the build date, and replaces it from the same URL when under 14 days are left, or at once after exit 10. It restarts Soloist on exit with a backoff. It runs `-n Q2` (configurable), `-D data/soloist-state`, `-C data/cache`, `-z 100`, `-i 100` and `--ws 127.0.0.1:0`, then reads `ws.port` from the data directory.
+- **Soloist manager.** Picks the build by `uname -m`, downloads it to `data/soloist/`, reads `--version` for the build date, and replaces it from the same URL when under 14 days are left (checked daily; Soloist restarts on the new build once nothing plays), or at once after exit 10. It restarts Soloist on exit with a backoff. It runs `-n Q2` (configurable), `-D data/soloist-state`, `-C data/cache`, `-z 100`, `-i 100` and `--ws 127.0.0.1:0`, then reads `ws.port` from the data directory.
 - **Audio.** Native Linux with PipeWire: `pactl load-module module-null-sink sink_name=q2_soloify …` and Soloist with `-d q2_soloify`. Container: a private PulseAudio daemon (`--exit-idle-time=-1`, null sink as default, no host audio). Soloist falls back to PulseAudio when PipeWire can't start. On PipeWire only `-d` routes it (`PULSE_SINK` is ignored); on a PulseAudio host, `PULSE_SINK=q2_soloify` does (step 0). The encoder is the doc's ffmpeg line, started per relay audio request and stopped on pause or disconnect, so nothing queues. Unset `LD_LIBRARY_PATH` for nixpkgs ffmpeg.
 - **TLS.** On first run it generates an ECDSA P-256 self-signed certificate. `soloify remote [--lan IP] [--wan HOST]` prints the `remote` file with the token and `sha256=`. An optional `--cert/--key` (Let's Encrypt or Funnel) drops the pin.
 - **Web API.** `soloify login` runs PKCE through a loopback redirect, and keeps the refresh token in the data directory. Before relying on each endpoint in the Q2SPOT/1 table, check it on a development-mode app: Spotify has restricted some for new apps, and editorial or algorithmic playlists may answer `unavailable`.

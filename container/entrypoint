@@ -4,7 +4,7 @@
 # soloify, start the private PulseAudio, fetch Soloist when missing (from /import when a dev
 # compose mounts a tarball there) and run the command.
 set -eu
-# The volume holds Soloist's session and, later, the bridge's key and token
+# The volume holds Soloist's session and the bridge's key and token
 umask 077
 
 if [ "$(id -u)" = 0 ]; then

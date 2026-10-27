@@ -1,5 +1,6 @@
 # Development: the repo's git-ignored soloist_release_<target>.tar.gz is installed instead of a
-# download, and the container stays up for `docker compose exec soloify sh` until the bridge exists.
+# download, and the container idles instead of running the bridge, for `docker compose exec soloify
+# sh` to run Soloist or soloify serve by hand.
 services:
   soloify:
     volumes:

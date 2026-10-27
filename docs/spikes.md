@@ -69,5 +69,5 @@ MacBook Air, Docker Desktop 4.97 (server 29.9.2), container `aarch64` with Soloi
 - Bridge audio (step 1): `-d q2_soloify` when PipeWire is running, `PULSE_SINK=q2_soloify` on a PulseAudio host, nothing in the container.
 - Pairing tool (step 6): `soloify pair`. On macOS and Windows (sh and PowerShell), it fetches the native build, runs `--pair`, and copies `soloist-state/` into the volume. On Linux, it pairs natively or on host networking and prints the ZeroConf port to open.
 - Setup docs (step 6): Docker Desktop 4.34 or later. Skip host networking on macOS and Windows. The Spotify desktop app on the same machine counts as a pairing client. Never run two copies of one session.
-- Soloist manager (step 2): builds change often (1.3.10.16 to 1.3.10.18 within a day), each with its own 90-day expiry; the planned refresh from the fixed URL covers it.
+- Soloist manager (step 2): builds change often (1.3.10.16 to 1.3.10.18 within a day), each with its own 90-day expiry; the planned refresh from the fixed URL covers it. Done in step 2 ([step2.md](step2.md)).
 - Podman wasn't tested (not installed); it moves to step 7.
