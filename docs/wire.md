@@ -13,7 +13,7 @@ Version 1, step 1's subset (PLAN.md; q2-pod's `docs/soloist.md`, "Relay ↔ brid
 | Type | Direction | Payload |
 | --- | --- | --- |
 | `A` | relay → bridge | `1`: send audio. `0 pause` or `0 stall`: stop. |
-| `k` | relay → bridge | u32: audio packets received since the hello, sent about every 200 ms while audio flows |
+| `k` | relay → bridge | u32: audio packets received since the hello, sent about every 200 ms while audio flows and at least every 5 s otherwise; the bridge drops a relay it hears nothing from for 20 s |
 | `t` | relay → bridge | stats as text (`key=value` words), logged by the bridge |
 | `a` | bridge → relay | u32 sequence number, then one Opus packet (20 ms, 48 kHz stereo) |
 
