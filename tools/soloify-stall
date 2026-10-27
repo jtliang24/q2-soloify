@@ -1,0 +1,31 @@
+#!/bin/sh
+# soloify-stall SECONDS [PORT]
+# Step 1's forced stall: drops the bridge's TCP port (7443) both ways for SECONDS, as a dead link
+# does, then lets it through again. The connection survives a short block, so this tests the
+# bridge's in-flight rule rather than a reconnect. Needs root: run it from `nix develop` and it asks
+# sudo for itself, with the shell's nft (sudo's PATH has none). The rules live in their own
+# nftables table, removed on exit or Ctrl-C.
+set -eu
+[ $# -ge 1 ] || {
+    echo "usage: soloify-stall SECONDS [PORT]" >&2
+    exit 2
+}
+secs=$1
+port=${2:-7443}
+if [ "$(id -u)" != 0 ]; then
+    exec sudo NFT="${NFT:-$(command -v nft)}" "$0" "$@"
+fi
+nft=${NFT:-nft}
+table=soloify_stall
+
+"$nft" -f - <<RULES
+table inet $table {
+    chain input { type filter hook input priority -10; tcp dport $port drop; }
+    chain output { type filter hook output priority -10; tcp sport $port drop; }
+}
+RULES
+trap '"$nft" delete table inet $table' EXIT
+trap 'exit 130' INT TERM
+echo "soloify-stall: port $port blocked for $secs s" >&2
+sleep "$secs"
+echo "soloify-stall: port $port open again" >&2
