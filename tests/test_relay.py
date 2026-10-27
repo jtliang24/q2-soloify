@@ -174,6 +174,7 @@ async def test_ca_mode_refuses_another_ca(tmp_path, rig):
 async def test_q2pod_option_stands_in_for_librespot(tmp_path, rig):
     """-q: the pid file, a bound control socket that takes datagrams, and state=playing."""
     base = tmp_path / "q2-librespot"
+    (tmp_path / "q2-librespot.tmp").mkdir()  # librespot's --tmp folder, left behind
     relay = await rig([], "-q", env={"SOLOIFY_Q2POD": str(base)})
     await relay.expect("says playing")
     assert base.read_text() == f"{relay.proc.pid}\n"

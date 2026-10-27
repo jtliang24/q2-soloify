@@ -11,7 +11,7 @@ static int sock = -1;
 static void put(const char *path, const char *text) {
     char tmp[160];
     int fd;
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    snprintf(tmp, sizeof tmp, "%s.new", path); /* not .tmp: /tmp/q2-librespot.tmp is librespot's folder */
     if ((fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0) return;
     write(fd, text, strlen(text));
     close(fd);
