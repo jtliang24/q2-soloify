@@ -42,6 +42,17 @@ void wire_consume(struct wire *w);
 uint32_t be32(const unsigned char *p);
 void put_be32(unsigned char *p, uint32_t v);
 
+/* ogg.c: one page per packet; out needs 27 + 6 + n bytes for a packet, 128 for the headers */
+struct ogg { uint32_t seq; uint64_t granule; };
+void ogg_init(void);
+int ogg_headers(struct ogg *o, unsigned char *out);
+int ogg_packet(struct ogg *o, unsigned char *out, const unsigned char *p, int n);
+
+/* sink.c: the decoder and aplay.sh; sink_start gives the pipe to write the Ogg into */
+int sink_start(void);
+void sink_stop(void);
+int sink_exited(void);
+
 /* audio.c: the ring, the Ogg stream and the sink */
 void audio_start(int target_ms); /* a link is up, with this buffer target */
 void audio_packet(const unsigned char *p, int n);

@@ -45,7 +45,8 @@ int relay_wait(int fd, short events, uint64_t deadline) {
         if (now >= deadline) return 0;
         if (fd >= 0) p[n].fd = fd, p[n].events = events, p[n].revents = 0, ++n;
         sink = audio_pollfd(&p[n]) ? n++ : -1;
-        r = poll(p, n, deadline - now > 100 ? 100 : (int)(deadline - now));
+        /* At least a packet's pace, for the sink's real-time feed */
+        r = poll(p, n, deadline - now > FRAME_MS ? FRAME_MS : (int)(deadline - now));
         if (r < 0 && relay_errno != EINTR) return 0;
         if (sink >= 0 && p[sink].revents) audio_service(p[sink].revents);
         audio_tick();
@@ -111,7 +112,9 @@ static void stats(const struct endpoint *ep, unsigned received) {
 static void session(const struct endpoint *ep, int target) {
     unsigned received = 0, acked = 0;
     uint64_t now = now_ms(), last_rx = now, probe = now, ack = now + ACK_MS, last_ack = now;
-    uint64_t next_stats = now + STATS_MS;
+    const char *every = getenv("SOLOIFY_STATS_MS"); /* for tests */
+    int stats_ms = every ? strtol(every, NULL, 10) : STATS_MS;
+    uint64_t next_stats = now + stats_ms;
     say("connected to %s:%s, buffer %d ms", ep->host, ep->port, target);
     audio_start(target);
     for (;;) {
@@ -119,14 +122,18 @@ static void session(const struct endpoint *ep, int target) {
         int type, n, ev;
         uint64_t wake;
         now = now_ms();
-        if (now >= probe) wire_send(&wire, 'A', "1", 1), probe = now + PROBE_MS;
+        if (now >= probe) {
+            char want[16];
+            wire_send(&wire, 'A', want, snprintf(want, sizeof want, "1 %d", target));
+            probe = now + PROBE_MS;
+        }
         if ((now >= ack && received != acked) || now >= last_ack + ACK_IDLE_MS) {
             unsigned char b[4];
             put_be32(b, received);
             if (!wire_send(&wire, 'k', b, 4)) acked = received, last_ack = now;
             ack = now + ACK_MS;
         }
-        if (now >= next_stats) stats(ep, received), next_stats = now + STATS_MS;
+        if (now >= next_stats) stats(ep, received), next_stats = now + stats_ms;
         if (now >= last_rx + DEAD_MS) {
             say("nothing from the bridge for %d s", DEAD_MS / 1000);
             break;

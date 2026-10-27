@@ -88,7 +88,7 @@ int *__errno_location(void);
 int open(const char *, int, ...), close(int), dup2(int, int), pipe(int *), fcntl(int, int, ...);
 ssize_t read(int, void *, size_t), write(int, const void *, size_t);
 int fork(void), setpgid(int, int), kill(int, int), waitpid(int, int *, int), execl(const char *, const char *, ...);
-void _exit(int), exit(int);
+__attribute__((noreturn)) void _exit(int);
 int poll(struct pollfd *, nfds_t, int), clock_gettime(int, struct timespec *);
 void (*signal(int, void (*)(int)))(int);
 int socket(int, int, int), connect(int, const struct sockaddr *, socklen_t);
