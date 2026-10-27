@@ -17,6 +17,9 @@ if [ "$(id -u)" = 0 ]; then
         setpriv --reuid soloify --regid soloify --init-groups "$0" "$@"
 fi
 
+# A killed run leaves PulseAudio's pid file and socket in the container's writable layer, and the
+# next start's daemon fails over them
+rm -rf "$XDG_RUNTIME_DIR/pulse"
 pulseaudio --daemonize=yes --exit-idle-time=-1 --disallow-exit --disable-shm=yes \
     --log-target=stderr -n -F /etc/soloify/pulse.pa
 for _ in 1 2 3 4 5 6 7 8 9 10; do
