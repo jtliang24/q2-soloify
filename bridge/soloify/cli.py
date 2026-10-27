@@ -8,22 +8,36 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__, server, wire
+from . import __version__, audio, server, soloist
 
 PORT = 7443
 
 
-async def _drain(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-    while True:
-        kind, payload = await wire.read_frame(reader)
-        if kind == wire.STATS:
-            server.log.info("relay: %s", payload.decode(errors="replace"))
-
-
 async def serve(args: argparse.Namespace) -> int:
     identity = server.Identity.load(args.data)
-    listener = await server.Server(identity, _drain).start(args.listen, args.port)
-    server.log.info("listening on %s, pin sha256=%s", args.port, identity.pin)
+    tasks = []
+    if args.source == "test":
+        player = audio.Player(None)
+    else:
+        await soloist.ensure_sink()
+        solo = soloist.Soloist(args.data, args.key)
+        player = audio.Player(solo)
+        tasks.append(asyncio.create_task(solo.run()))
+
+    def encoder() -> audio.Encoder:
+        return audio.Encoder(audio.ffmpeg_args(args.source, args.bitrate))
+
+    async def session(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await audio.Session(player, encoder, args.inflight).run(reader, writer)
+
+    listener = await server.Server(identity, session).start(args.listen, args.port)
+    server.log.info(
+        "listening on %s, pin sha256=%s, %s at %d kbit/s",
+        args.port,
+        identity.pin,
+        args.source,
+        args.bitrate,
+    )
     async with listener:
         await listener.serve_forever()
     return 0
@@ -49,6 +63,19 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("serve", help="run Soloist and the bridge")
     p.add_argument("--listen", default=None, help="address to listen on (default all)")
     p.add_argument("--port", type=int, default=PORT)
+    p.add_argument("--bitrate", type=int, choices=(96, 128, 160), default=160, help="kbit/s")
+    p.add_argument(
+        "--inflight", type=int, default=2000, help="ms of unacked audio that make a stall"
+    )
+    p.add_argument(
+        "--source", choices=("pulse", "test"), default="pulse", help="test: a beep, no Soloist"
+    )
+    p.add_argument(
+        "--key",
+        type=Path,
+        default=Path(os.environ.get("SOLOIST_API_KEY_FILE", "soloist_api.key")),
+        help="Soloist's API key (default $SOLOIST_API_KEY_FILE or soloist_api.key)",
+    )
     p = sub.add_parser("remote", help="print the card's .soloify/remote")
     p.add_argument("--lan", action="append", help="LAN address, tried first (default: this one's)")
     p.add_argument("--wan", action="append", help="name or address from outside, tried next")
