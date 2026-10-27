@@ -43,16 +43,17 @@ int relay_wait(int fd, short events, uint64_t deadline) {
         struct pollfd p[2];
         int n = 0, sink, r;
         uint64_t now = now_ms();
-        if (now >= deadline) return 0;
         if (fd >= 0) p[n].fd = fd, p[n].events = events, p[n].revents = 0, ++n;
         sink = audio_pollfd(&p[n]) ? n++ : -1;
-        /* At least a packet's pace, for the sink's real-time feed */
-        r = poll(p, n, deadline - now > FRAME_MS ? FRAME_MS : (int)(deadline - now));
+        /* At least a packet's pace, for the sink's real-time feed. A deadline already past still
+         * polls once, so a late caller never starves the link or the sink. */
+        r = poll(p, n, now >= deadline ? 0 : deadline - now > FRAME_MS ? FRAME_MS : (int)(deadline - now));
         if (r < 0 && relay_errno != EINTR) return 0;
         if (sink >= 0 && p[sink].revents) audio_service(p[sink].revents);
         audio_tick();
         q2pod_tick();
         if (fd >= 0 && p[0].revents) return p[0].revents;
+        if (now >= deadline) return 0;
     }
 }
 
@@ -129,10 +130,14 @@ static void session(const struct endpoint *ep, int target) {
             wire_send(&wire, 'A', want, snprintf(want, sizeof want, "1 %d", target));
             probe = now + PROBE_MS;
         }
-        if ((now >= ack && received != acked) || now >= last_ack + ACK_IDLE_MS) {
-            unsigned char b[4];
-            put_be32(b, received);
-            if (!wire_send(&wire, 'k', b, 4)) acked = received, last_ack = now;
+        /* The timer moves on even with nothing to ack: left in the past, it would wake the loop at
+         * once, every time, while the bridge sends nothing */
+        if (now >= ack) {
+            if (received != acked || now >= last_ack + ACK_IDLE_MS) {
+                unsigned char b[4];
+                put_be32(b, received);
+                if (!wire_send(&wire, 'k', b, 4)) acked = received, last_ack = now;
+            }
             ack = now + ACK_MS;
         }
         if (now >= next_stats) stats(ep, received), next_stats = now + stats_ms;
