@@ -5,6 +5,8 @@
 # $SOLOIST_API_KEY_FILE (soloist_api.key). Extra options follow, e.g. --pair, -d q2_soloify or
 # --ws 127.0.0.1:0. Soloist takes its key only as -k, so ps shows it while it runs.
 set -eu
+# The data directory holds Soloist's stored session: private, whatever umask docker exec gives
+umask 077
 
 key=${SOLOIST_API_KEY_FILE:-soloist_api.key}
 data=${SOLOIFY_DATA:-data}
