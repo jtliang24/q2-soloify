@@ -1,6 +1,6 @@
 # The relay ↔ bridge wire
 
-Version 1, step 1's subset (PLAN.md; q2-pod's `docs/soloist.md`, "Relay ↔ bridge wire"). One TLS connection, which the relay on the card opens to the bridge, carries everything.
+Version 1, through step 2: audio, state, covers and controls (PLAN.md; q2-pod's `docs/soloist.md`, "Relay ↔ bridge wire"); Q2SPOT/1 comes with step 4. One TLS connection, which the relay on the card opens to the bridge, carries everything.
 
 ## Connection
 
@@ -15,9 +15,22 @@ Version 1, step 1's subset (PLAN.md; q2-pod's `docs/soloist.md`, "Relay ↔ brid
 | `A` | relay → bridge | `1 MS`: send audio, MS being the relay's buffer target. `0 pause`: stop (step 3's local pause). |
 | `k` | relay → bridge | u32: audio packets received since the hello, sent about every 200 ms while audio flows and at least every 5 s otherwise; the bridge drops a relay it hears nothing from for 20 s |
 | `t` | relay → bridge | stats as text (`key=value` words), logged by the bridge |
+| `c` | relay → bridge | a control datagram as Q2 Pod sent it: `p` play/pause, `P` play, `s` pause, `n` next, `b` previous, `S<ms>` seek |
 | `a` | bridge → relay | u32 sequence number, then one Opus packet (20 ms, 48 kHz stereo) |
+| `s` | bridge → relay | the state: librespot's status file lines (`key=value`, each ending `\n`), less `at=` |
+| `j` | bridge → relay | a track id, `\n`, then that track's cover as a JPEG |
 
-Reserved for later steps: `c` control, `q` Q2SPOT/1 request (relay → bridge); `s` state, `j` cover, `r` Q2SPOT/1 response (bridge → relay).
+Reserved for step 4: `q` Q2SPOT/1 request (relay → bridge), `r` Q2SPOT/1 response (bridge → relay). The relay ignores frame types it doesn't know.
+
+## State and covers
+
+The bridge follows Soloist through its WebSocket and sends `s` whenever what Q2 Pod shows changes: the state, the track, its duration, a seek or a pause (not the position's steady advance). Each burst of Soloist's events settles for 100 ms first, so a play that names the new track a moment after saying `playing` gives one state, not two. A newly connected relay gets the current cover, then the current state.
+
+- `state=` is `none` (Soloist isn't running, isn't logged in, or another device is active), `stopped`, `paused` or `playing`. Soloist's `buffering` (a seek, a skip, a new context) keeps the state before it, so the relay's sink isn't stopped for a tenth of a second each time. A pause the bridge made for a stall stays `playing`: the device plays on from its buffer, and Q2 Pod would take `paused` as a reason to free the DAC and start its idle stop.
+- With a track: `track=` (the Spotify id), `title=`, `artist=` (joined by `, `), `album=`, `duration=` and `position=` in ms, each value one line of at most 255 bytes. `position=` is Soloist's at the moment the bridge sends the frame; the relay stamps `at=` with its own `CLOCK_MONOTONIC` on arrival, and step 3 moves both by the buffer the device plays behind Soloist.
+- `cover=1` once the relay has this track's JPEG: the bridge sends `j` (Soloist's `default` cover, about 300 px, fetched over HTTPS) before the first state that says so. The id in `j` lets the relay keep a cover with its track if it delays the state.
+
+The bridge keeps Soloist at volume 100, setting it back whenever the phone changes it (librespot's `--volume-ctrl fixed`): the device's volume is its own.
 
 ## Audio
 
