@@ -1,0 +1,52 @@
+/* The relay: dials the bridge over TLS and plays its Opus through the stock ffmpeg into aplay.sh
+ * (docs/wire.md). One process, one poll loop. */
+#ifndef RELAY_H
+#define RELAY_H
+#include "sys.h"
+
+#define FRAME_MS 20
+#define MAX_ENDPOINTS 8
+
+extern int verbose;
+void say(const char *fmt, ...);
+uint64_t now_ms(void);
+/* Waits for events on fd until deadline (ms, now_ms's clock), feeding the sink meanwhile: the
+ * revents, 0 at the deadline. fd < 0 just waits. */
+int relay_wait(int fd, short events, uint64_t deadline);
+
+/* remote.c: .soloify/remote, one endpoint a line: HOST PORT TOKEN [sha256=HEX] [buffer=MS] */
+struct endpoint {
+    char host[128], port[8], token[80];
+    unsigned char pin[32];
+    int pinned, lan, buffer_ms;
+};
+int remote_load(const char *path, struct endpoint *eps, int max);
+
+/* tls.c */
+struct link { int fd; SSL_CTX *ctx; SSL *ssl; };
+int link_open(struct link *l, const struct endpoint *ep);
+int link_read(struct link *l, void *buf, int n);        /* >0 bytes, 0 none yet, -1 gone */
+int link_write(struct link *l, const void *buf, int n); /* bytes taken (maybe 0), -1 gone */
+void link_close(struct link *l);
+
+/* wire.c: frames of a type byte and a big-endian u32 length */
+struct wire {
+    unsigned char in[131072], out[32768];
+    int nin, nout;
+};
+int wire_send(struct wire *w, char type, const void *payload, int n); /* -1: no room */
+/* The next whole frame in w->in: its type, with *payload and *n set; 0 when none yet, -1 if too
+ * big. wire_consume drops it once handled. */
+int wire_next(struct wire *w, const unsigned char **payload, int *n);
+void wire_consume(struct wire *w);
+uint32_t be32(const unsigned char *p);
+void put_be32(unsigned char *p, uint32_t v);
+
+/* audio.c: the ring, the Ogg stream and the sink */
+void audio_start(int target_ms); /* a link is up, with this buffer target */
+void audio_packet(const unsigned char *p, int n);
+int audio_pollfd(struct pollfd *pfd); /* 1 with *pfd set when the sink wants waiting on */
+void audio_service(short revents);
+void audio_tick(void);
+int audio_stats(char *buf, int cap);
+#endif
