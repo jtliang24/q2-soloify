@@ -18,7 +18,7 @@ Copy `q2-soloify.bundle`, `soloist_api.key` and `b3-state.tgz` to each machine. 
 
 ## Prerequisites (each machine)
 
-- Docker Desktop 4.34 or later. For fallback 1, turn on Settings → Resources → Network → **Enable host networking**, then Apply and restart.
+- Docker Desktop 4.34 or later. For fallback 1, turn on Settings → Resources → Network → **Enable host networking**, then Apply and restart. The engine's restart kills running containers; start them again with the same `up` line.
 - Mac only: [OrbStack](https://orbstack.dev) for fallback 2 (install it when you reach that fallback).
 - Windows: Git for Windows (for `git clone` of the bundle).
 - The phone on the same Wi-Fi as the machine. Set the machine never to sleep during the test.
@@ -54,11 +54,11 @@ The repo holds only the x86_64 tarball, so on the Mac and on Windows ARM the ent
 
 ## Pairing: try in order, stop at the first that works
 
-Each pairing run waits for the phone. In Spotify's device picker, choose **Q2**. If Q2 doesn't appear within two minutes, stop it with Ctrl-C, write down "not listed", and go to the next fallback. A pairing that worked prints `pairing complete, credentials stored` and exits.
+Each pairing run waits for a Spotify client. In its device picker, choose **Q2**. The phone counts, and so does the Spotify desktop app on the same machine, which reaches Soloist without the LAN or the firewall; the Windows x86 run used only the desktop app. Write down which one you used. If Q2 doesn't appear within two minutes, stop it with Ctrl-C, write down "not listed", and go to the next fallback. A pairing that worked prints `pairing complete, credentials stored` and exits.
 
 To keep only the lines worth reporting from a log: on the Mac, `grep -E 'ready|ZeroConf|Reachability|getInfo|addUser|pairing complete|logged in|Using (Pulse|Pipe)' FILE`; in PowerShell, `Select-String -Pattern 'ready|ZeroConf|Reachability|getInfo|addUser|pairing complete|logged in|Using (Pulse|Pipe)' FILE`.
 
-**1. Host networking (Docker Desktop).**
+**1. Host networking (Docker Desktop).** On Windows x86 this didn't list Q2, even in the desktop app on the same PC ([spikes.md](spikes.md)). On Windows ARM, try it only to confirm that, or skip to fallback 3.
 
 ```sh
 dch up -d --wait
@@ -139,6 +139,7 @@ It passes when `status` says `logged in: yes`, `now` says `playing`, and `level`
 
 ```text
 host:            (MacBook Air / Windows x86 / Windows ARM)
+pairing client:  (phone / Spotify desktop app on this machine)
 os, arch:        (sw_vers, or OSVersion + PROCESSOR_ARCHITECTURE)
 docker:          (server version; Docker Desktop or OrbStack)
 container:       (uname -m; soloist --version)
