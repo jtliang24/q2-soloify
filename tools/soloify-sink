@@ -1,0 +1,48 @@
+#!/bin/sh
+# soloify-sink up | down | level [SECONDS] | encode SECONDS FILE
+# The null sink q2_soloify, for spikes before the bridge exists. up loads it unless it's there (the
+# container's pulse.pa makes it already) and prints its module id; down unloads it. level records
+# its monitor for SECONDS (default 10) and prints the mean and peak in dB: silence is about -91,
+# music above -40. encode writes SECONDS of it as the bridge will send it (docs/soloist.md's Opus
+# line) to FILE, to listen to. POSIX sh: runs natively and in the container.
+set -eu
+
+sink=${SOLOIFY_SINK:-q2_soloify}
+# nixpkgs' ffmpeg loads a mismatched libasound with an inherited LD_LIBRARY_PATH
+unset LD_LIBRARY_PATH
+
+module() {
+    pactl list short modules | awk -v s="sink_name=$sink" '$2 == "module-null-sink" && index($0, s) { print $1; exit }'
+}
+
+case "${1:-}" in
+up)
+    id=$(module)
+    if [ -z "$id" ]; then
+        id=$(pactl load-module module-null-sink sink_name="$sink" rate=44100 channels=2 format=s16le \
+            sink_properties=device.description=Soloify)
+    fi
+    echo "$id"
+    ;;
+down)
+    id=$(module)
+    [ -z "$id" ] || pactl unload-module "$id"
+    ;;
+level)
+    ffmpeg -nostdin -hide_banner -f pulse -i "$sink.monitor" -t "${2:-10}" -af volumedetect -f null - 2>&1 |
+        sed -nE 's/.*(mean_volume|max_volume): /\1 /p'
+    ;;
+encode)
+    [ $# -eq 3 ] || {
+        echo "usage: soloify-sink encode SECONDS FILE" >&2
+        exit 2
+    }
+    ffmpeg -nostdin -hide_banner -loglevel warning -y -f pulse -fragment_size 3528 -i "$sink.monitor" \
+        -t "$2" -af asetpts=N/SR/TB -ac 2 -ar 48000 -c:a libopus -b:a 160k -application audio \
+        -frame_duration 20 -page_duration 100000 "$3"
+    ;;
+*)
+    echo "usage: soloify-sink up | down | level [SECONDS] | encode SECONDS FILE" >&2
+    exit 2
+    ;;
+esac

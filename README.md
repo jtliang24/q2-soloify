@@ -41,7 +41,7 @@ Pairing needs the phone's Spotify app on Soloist's LAN. Under Docker Desktop's V
 | --- | --- |
 | `bridge/soloify/` | the bridge (Python); only `soloify --version` so far |
 | `tests/` | its tests |
-| `tools/soloist-fetch`, `tools/soloist-run` | fetch and run Soloist (POSIX sh, also used in the image) |
+| `tools/soloist-fetch`, `tools/soloist-run`, `tools/soloify-sink` | fetch and run Soloist; the null sink and its level (POSIX sh, also used in the image) |
 | `container/` | `Containerfile`, `entrypoint`, `pulse.pa` |
 | `compose*.yaml` | the service; Linux host networking; development |
 | `flake.nix` | the dev shell and the `soloist` launcher, on q2-pod's nixpkgs revision |

@@ -22,7 +22,7 @@ RUN python3 -m venv --system-site-packages /opt/soloify \
     && /opt/soloify/bin/pip install --no-deps --no-build-isolation --no-cache-dir /src \
     && rm -rf /src
 
-COPY tools/soloist-fetch tools/soloist-run /usr/local/bin/
+COPY tools/soloist-fetch tools/soloist-run tools/soloify-sink /usr/local/bin/
 COPY container/pulse.pa /etc/soloify/pulse.pa
 COPY container/entrypoint /usr/local/bin/soloify-entrypoint
 
