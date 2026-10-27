@@ -23,6 +23,7 @@ where = ["bridge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["bridge", "tests"]
 asyncio_mode = "auto"
 
 [tool.ruff]
