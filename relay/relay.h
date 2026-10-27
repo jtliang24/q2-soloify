@@ -53,6 +53,10 @@ int sink_start(void);
 void sink_stop(void);
 int sink_exited(void);
 
+/* q2pod.c: -q, Q2 Pod's DAC and standby hold for step 1's device pass */
+void q2pod_start(void);
+void q2pod_tick(void);
+
 /* audio.c: the ring, the Ogg stream and the sink */
 void audio_start(int target_ms); /* a link is up, with this buffer target */
 void audio_packet(const unsigned char *p, int n);

@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -45,12 +46,15 @@ typedef unsigned long long uint64_t;
 #define O_APPEND 0x8
 #define O_NONBLOCK 0x80
 #define O_CREAT 0x100
+#define O_TRUNC 0x200
 #define F_SETFD 2
 #define F_GETFL 3
 #define F_SETFL 4
 #define FD_CLOEXEC 1
 #define F_SETPIPE_SZ 1031
 #define AF_UNSPEC 0
+#define AF_UNIX 1
+#define SOCK_DGRAM 1
 #define SOCK_STREAM 2
 #define SOL_SOCKET 0xffff
 #define SO_KEEPALIVE 0x0008
@@ -75,6 +79,7 @@ typedef unsigned long long uint64_t;
 struct timespec { long tv_sec, tv_nsec; };
 struct pollfd { int fd; short events, revents; };
 struct sockaddr;
+struct sockaddr_un { unsigned short sun_family; char sun_path[108]; };
 struct addrinfo {
     int ai_flags, ai_family, ai_socktype, ai_protocol;
     socklen_t ai_addrlen;
@@ -91,7 +96,8 @@ int fork(void), setpgid(int, int), kill(int, int), waitpid(int, int *, int), exe
 __attribute__((noreturn)) void _exit(int);
 int poll(struct pollfd *, nfds_t, int), clock_gettime(int, struct timespec *);
 void (*signal(int, void (*)(int)))(int);
-int socket(int, int, int), connect(int, const struct sockaddr *, socklen_t);
+int socket(int, int, int), connect(int, const struct sockaddr *, socklen_t), bind(int, const struct sockaddr *, socklen_t);
+int getpid(void), unlink(const char *), rename(const char *, const char *);
 int setsockopt(int, int, int, const void *, socklen_t), getsockopt(int, int, int, void *, socklen_t *);
 int getaddrinfo(const char *, const char *, const struct addrinfo *, struct addrinfo **);
 void freeaddrinfo(struct addrinfo *);

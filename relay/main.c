@@ -1,7 +1,8 @@
-/* q2-soloify [-v] [-b MS] [-r REMOTE]: the card's relay. It dials the endpoints in REMOTE
+/* q2-soloify [-v] [-q] [-b MS] [-r REMOTE]: the card's relay. It dials the endpoints in REMOTE
  * (./remote) in order, says hello, asks for audio and plays it; on a dead link it reconnects, with
  * a backoff of 1 to 15 s while every endpoint fails. -b overrides the buffer target, otherwise
- * the endpoint's buffer=, else 1 s on the LAN and 4 s beyond it. */
+ * the endpoint's buffer=, else 1 s on the LAN and 4 s beyond it. -q stands in for librespot
+ * enough for Q2 Pod to hold the DAC and standby (q2pod.c). */
 #include "relay.h"
 
 #define HELLO_MS 5000
@@ -50,6 +51,7 @@ int relay_wait(int fd, short events, uint64_t deadline) {
         if (r < 0 && relay_errno != EINTR) return 0;
         if (sink >= 0 && p[sink].revents) audio_service(p[sink].revents);
         audio_tick();
+        q2pod_tick();
         if (fd >= 0 && p[0].revents) return p[0].revents;
     }
 }
@@ -162,18 +164,20 @@ static void session(const struct endpoint *ep, int target) {
 int main(int argc, char **argv) {
     const char *path = "remote";
     struct endpoint eps[MAX_ENDPOINTS];
-    int target_opt = 0, backoff = 1000;
+    int target_opt = 0, backoff = 1000, q2pod = 0;
     started = now_ms();
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-v")) verbose = 1;
+        else if (!strcmp(argv[i], "-q")) q2pod = 1;
         else if (!strcmp(argv[i], "-b") && i + 1 < argc) target_opt = strtol(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "-r") && i + 1 < argc) path = argv[++i];
         else {
-            say("usage: q2-soloify [-v] [-b MS] [-r REMOTE]");
+            say("usage: q2-soloify [-v] [-q] [-b MS] [-r REMOTE]");
             return 2;
         }
     }
     signal(SIGPIPE, SIG_IGN);
+    if (q2pod) q2pod_start();
     for (;;) {
         int n = remote_load(path, eps, MAX_ENDPOINTS), up = 0;
         if (n <= 0) say("no endpoint in %s: copy remote to .soloify (see the Soloify guide)", path);
