@@ -33,7 +33,7 @@ docker compose -f compose.yaml -f compose.dev.yaml exec -u soloify soloify sh
 
 `podman compose` takes the same files. The dev override installs the repo's `soloist_release_<arch>.tar.gz` instead of downloading, and runs `sleep infinity` until the bridge exists. Shells go in as `-u soloify`: the entrypoint starts as root only to hand the secret and the volume to that user. `hadolint container/Containerfile` lints the image.
 
-Pairing needs the phone's Spotify app on Soloist's LAN. Under Docker Desktop's VM on macOS and Windows that may not work; PLAN.md step 0 lists the fallbacks to try.
+Pairing needs the phone's Spotify app on Soloist's LAN, but only once: a paired container plays on the default network, controlled through Spotify's cloud. Under Docker Desktop on macOS and Windows the first pairing may need a fallback; [docs/step0-runbook.md](docs/step0-runbook.md) tries them, and [docs/spikes.md](docs/spikes.md) has the results.
 
 ## Layout
 
