@@ -1,0 +1,47 @@
+#!/bin/sh
+# Q2 Pod calls this synchronously; only the background loop owns the pid file.
+cd "$(dirname "$0")" || exit 1
+base=${SOLOIFY_Q2POD:-/tmp/q2-librespot}
+if [ "${1:-}" != --loop ]; then
+    # setsid keeps Q2 Pod's short-lived system() shell separate from the service.
+    setsid /bin/sh ./run --loop >> ./spot.log 2>&1 < /dev/null &
+    exit 0
+fi
+if read -r old 2>/dev/null < "$base" && kill -0 "$old" 2>/dev/null; then exit 0; fi
+lock=$base.runlock
+if ! mkdir "$lock" 2>/dev/null; then
+    # Allow a concurrent launcher to finish publishing its pid before considering it stale.
+    [ -f "$base" ] || sleep 1
+    if read -r old < "$base" && kill -0 "$old" 2>/dev/null; then exit 0; fi
+    rmdir "$lock" 2>/dev/null || exit 1
+    mkdir "$lock" 2>/dev/null || exit 0
+fi
+printf '%s\n' "$$" > "$base"
+child=
+sleeper=
+cleanup() {
+    trap '' TERM INT
+    [ -z "$child" ] || kill "$child" 2>/dev/null
+    [ -z "$child" ] || wait "$child" 2>/dev/null
+    [ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null
+    [ -z "$sleeper" ] || wait "$sleeper" 2>/dev/null
+    rm -f "$base"
+    rmdir "$lock" 2>/dev/null
+    exit 0
+}
+trap cleanup TERM INT
+bin=./q2-soloify
+[ -x "$bin" ] || bin=./librespot # step 3's temporary compatibility installation
+backoff=5
+while :; do
+    SOLOIFY_PARENT=$$ "$bin" -q &
+    child=$!
+    wait "$child"
+    child=
+    sleep "$backoff" &
+    sleeper=$!
+    wait "$sleeper"
+    sleeper=
+    backoff=$((backoff * 2))
+    [ "$backoff" -le 60 ] || backoff=60
+done
