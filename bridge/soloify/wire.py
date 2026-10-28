@@ -16,6 +16,8 @@ AUDIO_REQUEST = b"A"  # b"1" to start, b"0 pause" or b"0 stall" to stop
 ACK = b"k"  # u32: audio packets received since the hello
 STATS = b"t"  # text, logged
 CONTROL = b"c"  # a control datagram from Q2 Pod: p, P, s, n, b or S<ms>
+BROWSE_REQUEST = b"q"  # u32 correlation ID then unchanged Q2SPOT/1 request
+BROWSE_RESPONSE = b"r"  # u32 correlation ID then unchanged Q2SPOT/1 response
 # bridge -> relay
 AUDIO = b"a"  # u32 sequence, then one Opus packet
 STATE = b"s"  # the status file's key=value lines, less at=

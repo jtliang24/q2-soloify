@@ -8,7 +8,7 @@ import signal
 import sys
 from pathlib import Path
 
-from . import __version__, audio, server, soloist, spotify, ws
+from . import __version__, audio, browse, server, soloist, spotify, ws
 from .player import Covers, Player
 
 PORT = 7443
@@ -28,11 +28,14 @@ async def serve(args: argparse.Namespace) -> int:
         tasks.append(asyncio.create_task(solo.run(idle=lambda: not player.state.playing)))
         tasks.append(asyncio.create_task(link.run()))
 
+    api = spotify.Spotify(args.data)
+    browser = browse.Browser(api, player, args.data)
+
     def encoder() -> audio.Encoder:
         return audio.Encoder(audio.ffmpeg_args(args.source, args.bitrate))
 
     async def session(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        await audio.Session(player, encoder, args.inflight).run(reader, writer)
+        await audio.Session(player, encoder, args.inflight, browser).run(reader, writer)
 
     listener = await server.Server(identity, session).start(args.listen, args.port)
     server.log.info(
@@ -67,6 +70,7 @@ async def serve(args: argparse.Namespace) -> int:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await covers.close()
+        await api.close()
     return 1 if failed else 0
 
 

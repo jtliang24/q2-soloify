@@ -115,8 +115,14 @@ class Session:
     and its audio, an encoder while the relay asks for audio, stopped when unacked audio goes over
     the in-flight limit (a stall), on `A 0`, or when the relay goes."""
 
-    def __init__(self, player: Player, encoder: Callable[[], Encoder], inflight_ms: int):
+    def __init__(
+        self, player: Player, encoder: Callable[[], Encoder], inflight_ms: int, browser=None
+    ):
         self.player = player
+        self.browser = browser
+        self.pending_browse = set()
+        self.control_tasks = set()
+        self.audio_request = None
         self.encoder_factory = encoder
         self.limit = inflight_ms
         self.encoder: Encoder | None = None
@@ -143,13 +149,34 @@ class Session:
                 if kind == wire.AUDIO_REQUEST:
                     if payload.startswith(b"1"):
                         self.target(payload)
-                        await self.want()
+                        if self.audio_request is None or self.audio_request.done():
+                            self.audio_request = asyncio.create_task(self.want())
+                            self.control_tasks.add(self.audio_request)
+                            self.audio_request.add_done_callback(self.control_tasks.discard)
                     else:
-                        await self.halt(payload[2:].decode(errors="replace") or "stop")
+                        if len(self.control_tasks) >= 32:
+                            raise wire.WireError("too many audio requests")
+                        task = asyncio.create_task(
+                            self.halt(payload[2:].decode(errors="replace") or "stop")
+                        )
+                        self.control_tasks.add(task)
+                        task.add_done_callback(self.control_tasks.discard)
                 elif kind == wire.ACK:
                     self.acked = wire.ack_count(payload)
                 elif kind == wire.CONTROL:
-                    await self.control(payload)
+                    if len(self.control_tasks) >= 32:
+                        raise wire.WireError("too many controls")
+                    task = asyncio.create_task(self.control(payload))
+                    self.control_tasks.add(task)
+                    task.add_done_callback(self.control_tasks.discard)
+                elif kind == wire.BROWSE_REQUEST:
+                    if len(payload) < 4 or len(payload) > 8196:
+                        raise wire.WireError("invalid browse frame")
+                    if len(self.pending_browse) >= 4:
+                        raise wire.WireError("too many browse operations")
+                    task = asyncio.create_task(self.browse(payload))
+                    self.pending_browse.add(task)
+                    task.add_done_callback(self.pending_browse.discard)
                 elif kind == wire.STATS:
                     log.info(
                         "relay: %s inflight=%d",
@@ -157,11 +184,72 @@ class Session:
                         self.inflight_ms(),
                     )
         finally:
+            for task in self.pending_browse | self.control_tasks | self.tasks:
+                task.cancel()
+            await asyncio.gather(
+                *self.pending_browse, *self.control_tasks, *self.tasks, return_exceptions=True
+            )
             self.player.detach(writer)
             # A relay gone is a stall: Soloist shouldn't play to nobody
             await self.halt("gone")
             if self.pump:
                 await asyncio.wait([self.pump], timeout=5)
+
+    async def browse(self, payload):
+        from .browse import parse, response
+
+        # The relay resets as soon as it forwards these op names. Even a bad argument list
+        # must finish that boundary, or the relay would discard audio indefinitely.
+        fields = payload[4:].split(b"\t")
+        reset = len(fields) > 1 and fields[1].rstrip(b"\n") in (b"play", b"skip")
+        bounded = False
+
+        def finished():
+            nonlocal bounded
+            bounded = True
+
+        async def boundary(action, needs_reset):
+            return await self.browse_boundary(action, needs_reset, finished)
+
+        try:
+            if self.browser:
+                reply = await self.browser.handle(payload[4:], boundary)
+            else:
+                try:
+                    id, _, _ = parse(payload[4:])
+                    reply = response(id, "unsupported", "Browsing is not configured on this server")
+                except (ValueError, UnicodeError):
+                    reply = response("0", "bad", "Malformed request")
+        finally:
+            if reset and not bounded:
+                # Validation failed, or the deadline expired before obtaining the control lock.
+                # No playback action ran. Release this relay reset without queueing another action.
+                self.writer.write(wire.frame(wire.BOUNDARY, b"Q"))
+                self.player.sent = None
+                self.player.flush()
+        self.writer.write(wire.frame(wire.BROWSE_RESPONSE, payload[:4] + reply))
+
+    async def browse_boundary(self, action, reset=True, finished=None):
+        async with self.lock:
+            self.player.deferred = True
+            try:
+                if reset:
+                    await self._halt("control")
+                result = await action()
+                if reset:
+                    self.player._stalled(False)
+                return result
+            finally:
+                # Also release the reset on failure or cancellation; no action is replayed.
+                await asyncio.sleep(self.player.SETTLE)
+                if reset:
+                    self.writer.write(wire.frame(wire.BOUNDARY, b"Q"))
+                    if finished:
+                        finished()
+                self.player.sent = None
+                self.player._send_cover()
+                self.player.deferred = False
+                self.player.flush()
 
     def target(self, payload: bytes) -> None:
         """`A 1 MS` carries the relay's buffer target, which is also the in-flight limit: a stall
