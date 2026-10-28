@@ -39,14 +39,20 @@ class Covers:
                 if r.status != 200 or r.content_type != "image/jpeg":
                     log.info("cover: %s, %s", r.status, r.content_type)
                     return None
-                data = await r.content.read(COVER_MAX + 1)
+                # read(n) may return the first network chunk, rather than the whole JPEG.
+                # Consume to EOF with a bound; otherwise firmware renders the missing half gray.
+                data = bytearray()
+                async for chunk in r.content.iter_chunked(65536):
+                    if len(data) + len(chunk) > COVER_MAX:
+                        return None
+                    data.extend(chunk)
         except (aiohttp.ClientError, TimeoutError) as e:
             log.info("cover: %s", e.__class__.__name__)
             return None
-        if len(data) > COVER_MAX:
+        if not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
             return None
-        self.last = (url, data)
-        return data
+        self.last = (url, bytes(data))
+        return self.last[1]
 
     async def close(self) -> None:
         if self.http:
