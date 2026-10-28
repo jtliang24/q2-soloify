@@ -16,16 +16,23 @@ static const char *env_or(const char *name, const char *dflt) {
 }
 
 static int spawn(const char *cmd, int in, int out, int pgid, int *close_fds, int n) {
+    int parent = getpid();
     int pid = fork();
     if (pid) {
         if (pid > 0) setpgid(pid, pgid ? pgid : pid);
         return pid;
     }
+    /* Also release the PCM after SIGKILL, which firmware uses for Stop Streaming Services.
+     * The shell execs the command so the parent-death signal reaches the actual decoder/player. */
+    prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
+    if (getppid() != parent) _exit(0);
     setpgid(0, pgid);
     dup2(in, 0);
     if (out >= 0) dup2(out, 1);
     for (int i = 0; i < n; ++i) close(close_fds[i]);
-    execl(env_or("SOLOIFY_SH", "/bin/sh"), "sh", "-c", cmd, (char *)NULL);
+    char exec_cmd[2048];
+    if (snprintf(exec_cmd, sizeof exec_cmd, "exec %s", cmd) >= (int)sizeof exec_cmd) _exit(127);
+    execl(env_or("SOLOIFY_SH", "/bin/sh"), "sh", "-c", exec_cmd, (char *)NULL);
     _exit(127);
 }
 
@@ -55,8 +62,8 @@ int sink_start(void) {
 
 void sink_stop(void) {
     if (group > 0) kill(-group, SIGKILL);
-    if (decoder > 0) waitpid(decoder, NULL, 0);
-    if (player > 0) waitpid(player, NULL, 0);
+    if (decoder > 0) while (waitpid(decoder, NULL, 0) < 0 && relay_errno == EINTR) {}
+    if (player > 0) while (waitpid(player, NULL, 0) < 0 && relay_errno == EINTR) {}
     group = decoder = player = -1;
 }
 

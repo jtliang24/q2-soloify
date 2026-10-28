@@ -8,6 +8,8 @@
 #define MAX_ENDPOINTS 8
 
 extern int verbose;
+extern volatile int quitting, retry_remote;
+int relay_send(char type, const void *payload, int n);
 void say(const char *fmt, ...);
 uint64_t now_ms(void);
 /* Waits for events on fd until deadline (ms, now_ms's clock), feeding the sink meanwhile: the
@@ -31,7 +33,7 @@ void link_close(struct link *l);
 
 /* wire.c: frames of a type byte and a big-endian u32 length */
 struct wire {
-    unsigned char in[131072], out[32768];
+    unsigned char in[(1 << 20) + 5], out[32768];
     int nin, nout;
 };
 int wire_send(struct wire *w, char type, const void *payload, int n); /* -1: no room */
@@ -53,9 +55,16 @@ int sink_start(void);
 void sink_stop(void);
 int sink_exited(void);
 
-/* q2pod.c: -q, Q2 Pod's DAC and standby hold for step 1's device pass */
+/* q2pod.c: -q, librespot's state, controls and the minimal local browser */
 void q2pod_start(void);
 void q2pod_tick(void);
+void q2pod_stop(void);
+void q2pod_config(int valid);
+void q2pod_link(int up);
+void q2pod_frame(int type, const unsigned char *p, int n);
+void q2pod_started(void); /* the first buffered packet is about to reach the decoder */
+int q2pod_wants(void);
+int q2pod_audio(void);
 
 /* audio.c: the ring, the Ogg stream and the sink */
 void audio_start(int target_ms); /* a link is up, with this buffer target */
@@ -63,5 +72,10 @@ void audio_packet(const unsigned char *p, int n);
 int audio_pollfd(struct pollfd *pfd); /* 1 with *pfd set when the sink wants waiting on */
 void audio_service(short revents);
 void audio_tick(void);
+void audio_enable(int enabled); /* stop/reap, retaining the ring, or resume it */
+void audio_clear(void); /* a seek/skip: stop and discard everything */
+uint64_t audio_received(void);
+uint64_t audio_played(void);
+int audio_target(void);
 int audio_stats(char *buf, int cap);
 #endif

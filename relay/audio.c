@@ -22,6 +22,8 @@ static int npage, off;
 static uint64_t idle_since, over_since, fed_since;
 static unsigned fed_ms;
 static unsigned underruns, trims, drops, sinks;
+static int enabled = 1;
+static uint64_t received;
 
 static int level_ms(void) { return count * FRAME_MS; }
 
@@ -44,6 +46,7 @@ static void stop_sink(void) {
 }
 
 static void start_feeding(void) {
+    if (!enabled) return;
     if (fd < 0) {
         if ((fd = sink_start()) < 0) {
             say("can't start the sink");
@@ -51,6 +54,7 @@ static void start_feeding(void) {
         }
         ++sinks;
         npage = ogg_headers(&ogg, page), off = 0;
+        q2pod_started();
     }
     if (level_ms() > target + TRIM_OVER_MS) trim("backlog");
     feeding = 1, fed_since = now_ms(), fed_ms = 0;
@@ -67,12 +71,13 @@ void audio_start(int target_ms) {
 
 void audio_packet(const unsigned char *p, int n) {
     int i;
-    if (n > SLOT_BYTES) return;
+    if (n <= 0 || n > SLOT_BYTES) return;
     if (count == SLOTS) pop(), ++drops;
     i = (head + count) % SLOTS;
     memcpy(ring[i], p, n);
     lens[i] = n;
     ++count;
+    received += FRAME_MS;
     if (!feeding && level_ms() >= target) start_feeding();
 }
 
@@ -121,6 +126,38 @@ void audio_tick(void) {
     } else {
         over_since = 0;
     }
+    if (enabled && !feeding && level_ms() >= target) start_feeding();
+}
+
+void audio_enable(int on) {
+    if (!on && enabled && fd >= 0) {
+        uint64_t now = now_ms();
+        unsigned ahead_ms = fed_ms > now - fed_since ? fed_ms - (now - fed_since) : 0;
+        unsigned rewind = (ahead_ms + FRAME_MS - 1) / FRAME_MS;
+        if (rewind > LEAD_MS / FRAME_MS + 1) rewind = LEAD_MS / FRAME_MS + 1;
+        if (rewind > (unsigned)(SLOTS - count)) rewind = SLOTS - count;
+        head = (head + SLOTS - rewind) % SLOTS;
+        count += rewind; /* packets submitted ahead of the playback clock survive local pause */
+    }
+    enabled = on;
+    if (!on) stop_sink();
+}
+
+void audio_clear(void) {
+    stop_sink();
+    head = count = 0;
+    received = 0;
+    fed_ms = 0;
+    over_since = 0;
+}
+
+uint64_t audio_received(void) { return received; }
+int audio_target(void) { return target; }
+
+uint64_t audio_played(void) {
+    uint64_t ahead_ms = 0, now = now_ms();
+    if (fd >= 0 && fed_ms > now - fed_since) ahead_ms = fed_ms - (now - fed_since);
+    return received > (uint64_t)level_ms() + ahead_ms ? received - level_ms() - ahead_ms : 0;
 }
 
 int audio_stats(char *buf, int cap) {

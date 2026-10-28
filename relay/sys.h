@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/prctl.h>
+#include <sys/file.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -46,6 +48,7 @@ typedef unsigned long long uint64_t;
 #define O_APPEND 0x8
 #define O_NONBLOCK 0x80
 #define O_CREAT 0x100
+#define O_EXCL 0x400
 #define O_TRUNC 0x200
 #define F_SETFD 2
 #define F_GETFL 3
@@ -69,12 +72,16 @@ typedef unsigned long long uint64_t;
 #define POLLERR 0x8
 #define POLLHUP 0x10
 #define SIGKILL 9
+#define SIGINT 2
 #define SIGPIPE 13
 #define SIGTERM 15
 #define SIGCHLD 18
 #define SIG_IGN ((void (*)(int))1)
 #define WNOHANG 1
 #define CLOCK_MONOTONIC 1
+#define PR_SET_PDEATHSIG 1
+#define LOCK_EX 2
+#define LOCK_NB 4
 
 struct timespec { long tv_sec, tv_nsec; };
 struct pollfd { int fd; short events, revents; };
@@ -98,6 +105,8 @@ int poll(struct pollfd *, nfds_t, int), clock_gettime(int, struct timespec *);
 void (*signal(int, void (*)(int)))(int);
 int socket(int, int, int), connect(int, const struct sockaddr *, socklen_t), bind(int, const struct sockaddr *, socklen_t);
 int getpid(void), unlink(const char *), rename(const char *, const char *);
+int getppid(void), prctl(int, ...), flock(int, int);
+int listen(int, int), accept(int, struct sockaddr *, socklen_t *);
 int setsockopt(int, int, int, const void *, socklen_t), getsockopt(int, int, int, void *, socklen_t *);
 int getaddrinfo(const char *, const char *, const struct addrinfo *, struct addrinfo **);
 void freeaddrinfo(struct addrinfo *);

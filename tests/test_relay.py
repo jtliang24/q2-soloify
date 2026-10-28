@@ -2,6 +2,8 @@
 
 import datetime
 import socket
+import tempfile
+from pathlib import Path
 
 import pytest
 from cryptography import x509
@@ -171,14 +173,15 @@ async def test_ca_mode_refuses_another_ca(tmp_path, rig):
         await bridge.stop()
 
 
-async def test_q2pod_option_stands_in_for_librespot(tmp_path, rig):
-    """-q: the pid file, a bound control socket that takes datagrams, and state=playing."""
-    base = tmp_path / "q2-librespot"
-    (tmp_path / "q2-librespot.tmp").mkdir()  # librespot's --tmp folder, left behind
-    relay = await rig([], "-q", env={"SOLOIFY_Q2POD": str(base)})
-    await relay.expect("says playing")
-    assert base.read_text() == f"{relay.proc.pid}\n"
-    assert (tmp_path / "q2-librespot.state").read_text() == "state=playing\n"
-    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
-        for _ in range(500):  # more than a socket buffer: the relay drains them
-            s.sendto(b"p", str(tmp_path / "q2-librespot.sock"))
+async def test_q2pod_starts_without_claiming_playback(tmp_path, rig):
+    """The launcher owns the pid file; the relay binds liveness and starts at none."""
+    with tempfile.TemporaryDirectory(prefix="sf-") as folder:
+        base = Path(folder) / "q"
+        base.write_text("12345\n")
+        Path(f"{base}.tmp").mkdir()  # librespot's leftover directory
+        relay = await rig([], "-q", env={"SOLOIFY_Q2POD": str(base)})
+        await relay.expect("state and controls ready")
+        assert base.read_text() == "12345\n"
+        assert Path(f"{base}.state").read_text().startswith("state=none\n")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.connect(f"{base}.sock")  # firmware's spot_alive sends nothing

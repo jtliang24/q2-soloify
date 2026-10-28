@@ -1,8 +1,7 @@
 /* q2-soloify [-v] [-q] [-b MS] [-r REMOTE]: the card's relay. It dials the endpoints in REMOTE
  * (./remote) in order, says hello, asks for audio and plays it; on a dead link it reconnects, with
  * a backoff of 1 to 15 s while every endpoint fails. -b overrides the buffer target, otherwise
- * the endpoint's buffer=, else 1 s on the LAN and 4 s beyond it. -q stands in for librespot
- * enough for Q2 Pod to hold the DAC and standby (q2pod.c). */
+ * the endpoint's buffer=, else 1 s on the LAN and 4 s beyond it. -q enables the device contract. */
 #include "relay.h"
 
 #define HELLO_MS 5000
@@ -14,10 +13,24 @@
 #define BACKOFF_MAX_MS 15000
 
 int verbose;
+volatile int quitting, retry_remote;
 static uint64_t started;
 static struct link conn = {.fd = -1};
 static struct wire wire;
 static unsigned reconnects;
+static int connected;
+
+int relay_send(char type, const void *payload, int n) {
+    if (!connected) return -1;
+    if (wire_send(&wire, type, payload, n) < 0) {
+        /* Never silently lose a pause/seek: recover a full output queue as a broken link. */
+        connected = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static void stop(int sig) { quitting = 1; }
 
 uint64_t now_ms(void) {
     struct timespec t;
@@ -40,6 +53,7 @@ void say(const char *fmt, ...) {
 
 int relay_wait(int fd, short events, uint64_t deadline) {
     for (;;) {
+        if (quitting || (fd < 0 && retry_remote)) return 0;
         struct pollfd p[2];
         int n = 0, sink, r;
         uint64_t now = now_ms();
@@ -120,14 +134,16 @@ static void session(const struct endpoint *ep, int target) {
     uint64_t next_stats = now + stats_ms;
     say("connected to %s:%s, buffer %d ms", ep->host, ep->port, target);
     audio_start(target);
-    for (;;) {
+    connected = 1;
+    q2pod_link(1);
+    for (; !quitting && connected;) {
         const unsigned char *payload;
         int type, n, ev;
         uint64_t wake;
         now = now_ms();
         if (now >= probe) {
             char want[16];
-            wire_send(&wire, 'A', want, snprintf(want, sizeof want, "1 %d", target));
+            if (q2pod_wants()) wire_send(&wire, 'A', want, snprintf(want, sizeof want, "1 %d", target));
             probe = now + PROBE_MS;
         }
         /* The timer moves on even with nothing to ack: left in the past, it would wake the loop at
@@ -141,7 +157,7 @@ static void session(const struct endpoint *ep, int target) {
             ack = now + ACK_MS;
         }
         if (now >= next_stats) stats(ep, received), next_stats = now + stats_ms;
-        if (now >= last_rx + DEAD_MS) {
+        if (q2pod_wants() && now >= last_rx + DEAD_MS) {
             say("nothing from the bridge for %d s", DEAD_MS / 1000);
             break;
         }
@@ -154,7 +170,10 @@ static void session(const struct endpoint *ep, int target) {
             break;
         }
         while ((type = wire_next(&wire, &payload, &n)) > 0) {
-            if (type == 'a' && n > 4) audio_packet(payload + 4, n - 4), ++received;
+            if (type == 'a' && n > 4) {
+                if (q2pod_audio()) audio_packet(payload + 4, n - 4);
+                ++received; /* ack discarded audio too, so a reset never blocks flow control */
+            } else q2pod_frame(type, payload, n);
             wire_consume(&wire);
         }
         if (type < 0) {
@@ -162,6 +181,8 @@ static void session(const struct endpoint *ep, int target) {
             break;
         }
     }
+    connected = 0;
+    q2pod_link(0);
     link_close(&conn);
     ++reconnects;
 }
@@ -182,11 +203,21 @@ int main(int argc, char **argv) {
         }
     }
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGTERM, stop);
+    signal(SIGINT, stop);
+    const char *parent = getenv("SOLOIFY_PARENT");
+    if (parent) {
+        prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
+        if (getppid() != strtol(parent, NULL, 10)) quitting = 1;
+    }
+    if (target_opt && (target_opt < 200 || target_opt > 20000)) return 2;
     if (q2pod) q2pod_start();
-    for (;;) {
+    for (; !quitting;) {
         int n = remote_load(path, eps, MAX_ENDPOINTS), up = 0;
+        retry_remote = 0;
+        q2pod_config(n > 0);
         if (n <= 0) say("no endpoint in %s: copy remote to .soloify (see the Soloify guide)", path);
-        for (int i = 0; i < n && !up; ++i) {
+        for (int i = 0; i < n && !up && !quitting; ++i) {
             if (link_open(&conn, &eps[i]) < 0) continue;
             if (hello(&eps[i]) < 0) {
                 say("%s: the bridge refused the hello", eps[i].host);
@@ -203,4 +234,7 @@ int main(int argc, char **argv) {
         relay_wait(-1, 0, now_ms() + backoff);
         backoff = backoff * 2 > BACKOFF_MAX_MS ? BACKOFF_MAX_MS : backoff * 2;
     }
+    audio_clear();
+    q2pod_stop();
+    return 0;
 }

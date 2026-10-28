@@ -26,7 +26,11 @@ async def relays():
 async def test_ogg_stream_decodes_cleanly(tmp_path, bridge, relays):
     """The relay's Ogg (its own pages and CRCs) is what the device's ffmpeg reads."""
     out = tmp_path / "out.ogg"
-    env = {"SOLOIFY_DECODE": f"cat > {out}", "SOLOIFY_STATS_MS": "500"}
+    env = {
+        "SOLOIFY_DECODE": f"cat > {out}",
+        "SOLOIFY_SINK": "sleep 100",  # this decoder writes a file rather than PCM
+        "SOLOIFY_STATS_MS": "500",
+    }
     relay = await Relay(tmp_path, [bridge.line()], env=env).start()
     relays.append(relay)
     await relay.expect("connected to")
