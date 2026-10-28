@@ -53,6 +53,7 @@ class Bridge:
         self.start_delay = start_delay
         self.sessions: list[audio.Session] = []
         self.encoders = 0
+        self.browser = None
         self.server = server.Server(self.identity, self._session)
         self.listener = None
         self.port = 0
@@ -62,7 +63,7 @@ class Bridge:
         return SlowEncoder(audio.ffmpeg_args("test", 160), self.start_delay)
 
     async def _session(self, reader, writer):
-        s = audio.Session(Player(), self._encoder, self.inflight)
+        s = audio.Session(Player(), self._encoder, self.inflight, self.browser)
         self.sessions.append(s)
         await s.run(reader, writer)
 

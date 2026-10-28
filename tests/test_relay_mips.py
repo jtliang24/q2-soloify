@@ -64,3 +64,35 @@ async def test_device_build_plays_through_the_stock_ffmpeg(tmp_path, device):
     finally:
         await relay.stop()
         await bridge.stop()
+
+
+async def test_device_build_forwards_browser(tmp_path, device):
+    import tempfile
+
+    from soloify import browse as protocol
+    from test_contract import browse
+
+    class Browser:
+        async def handle(self, raw, boundary):
+            id, op, args = protocol.parse(raw)
+            return protocol.response(
+                id, rows=[("playlist", "spotify:playlist:P", "音楽%", "", "", "")]
+            )
+
+    exe, rootfs = device
+    bridge = Bridge(tmp_path / "data")
+    bridge.browser = Browser()
+    await bridge.start()
+    with tempfile.TemporaryDirectory(prefix="sf-") as folder:
+        base = Path(folder) / "q"
+        relay = Relay(tmp_path, [bridge.line()], "-q", env={"SOLOIFY_Q2POD": str(base)})
+        relay.binary = ["qemu-mipsel", "-L", str(rootfs), str(exe)]
+        await relay.start()
+        try:
+            await relay.expect("connected to 127.0.0.1", timeout=20)
+            reply = await browse(base, b"Q2SPOT/1\n7\tplaylists\n")
+            assert "音楽%25".encode() in reply
+            assert b"spotify:playlist:P" in reply
+        finally:
+            await relay.stop()
+            await bridge.stop()

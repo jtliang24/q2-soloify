@@ -15,7 +15,14 @@ static struct { char text[TEXT]; uint64_t sample; } states[STATES];
 static unsigned first, count;
 static struct { char id[64]; unsigned char *data; int size; } covers[COVERS];
 static unsigned next_cover;
-static struct { int fd, n, sent, out, bad; uint64_t end; char buf[8193], reply[512]; } clients[CLIENTS];
+static struct { int fd, n, sent, out, bad, waiting; unsigned correlation;
+    uint64_t end; char id[11], buf[8193], reply[65537]; } clients[CLIENTS];
+static unsigned next_request;
+static void local_reply(int i, const char *status, const char *message) {
+    clients[i].waiting = 0;
+    clients[i].out = snprintf(clients[i].reply, sizeof clients[i].reply,
+        "Q2SPOT/1\n%s\t%s\t%s\t\n", *clients[i].id ? clients[i].id : "0", status, message);
+}
 
 static void value(const char *text, const char *key, char *out, int cap) {
     int k = strlen(key);
@@ -147,6 +154,9 @@ void q2pod_config(int valid) { configured = valid; }
 void q2pod_link(int up) {
     online = up;
     commands = resetting = 0;
+    if (!up) for (int i = 0; i < CLIENTS; ++i)
+        if (clients[i].fd >= 0 && clients[i].waiting)
+            local_reply(i, "offline", "Bridge disconnected; Retry to reconnect");
     if (enabled && up && held) {
         if (!relay_send('c', "s", 1)) ++commands;
         relay_send('A', "0 pause", 7);
@@ -176,7 +186,22 @@ static void command(char *buf, int n) {
 }
 void q2pod_frame(int type, const unsigned char *p, int n) {
     if (!enabled) return;
-    if (type == 'x') {
+    if (type == 'r' && n > 4 && n <= 65540) {
+        unsigned id = be32(p);
+        for (int i = 0; i < CLIENTS; ++i) {
+            if (clients[i].fd < 0 || !clients[i].waiting || clients[i].correlation != id) continue;
+            char header[32];
+            int h = snprintf(header, sizeof header, "Q2SPOT/1\n%s\t", clients[i].id);
+            if (n - 4 < h || memcmp(p + 4, header, h) || memchr(p + 4, 0, n - 4)) {
+                local_reply(i, "error", "Malformed bridge response");
+                return;
+            }
+            memcpy(clients[i].reply, p + 4, n - 4);
+            clients[i].out = n - 4;
+            clients[i].waiting = 0;
+            return;
+        }
+    } else if (type == 'x') {
         if (n && (p[0] == 's' || p[0] == 'P')) {
             if (commands) --commands;
         } else {
@@ -243,32 +268,57 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
     }
 }
 static void reply(int i) {
-    char *buf = clients[i].buf, *line, *id, *op, *end;
-    const char *status = "bad", *message = "Malformed request";
-    id = "0";
-    if (clients[i].bad) buf[0] = 0;
-    if (!strncmp(buf, "Q2SPOT/1\n", 9) && (line = strchr(buf + 9, '\n')) && !line[1]) {
-        *line = 0;
-        id = buf + 9;
-        end = strchr(id, '\t');
-        if (end) {
-            *end = 0;
-            op = end + 1;
-            int valid = *id != 0 && strlen(id) <= 10;
-            for (char *c = id; *c; ++c) if (*c < '0' || *c > '9') valid = 0;
-            if (valid) {
-                retry_remote = 1;
-                if (!configured) status = "error", message = "Copy remote to .soloify (see the Soloify guide)";
-                else if (!online) status = "offline", message = "Can't reach the Spotify bridge";
-                else if (!strcmp(op, "caps")) status = "ok", message = "soloify step 3";
-                else if (!strcmp(op, "account")) {
-                    if (is(upstream, "none")) status = "error", message = "Pair Soloify on its server and choose Q2 in Spotify";
-                    else status = "ok", message = "";
-                } else status = "unsupported", message = "Browsing comes in Soloify step 4";
-            } else id = "0";
-        } else id = "0";
+    char *buf = clients[i].buf;
+    int n = clients[i].n, start = 9, end;
+    if (clients[i].bad || n < 12 || memcmp(buf, "Q2SPOT/1\n", 9) || buf[n-1] != '\n') goto bad;
+    for (int k = 9; k < n-1; ++k) {
+        if (buf[k] == '\n' || buf[k] == '\r') goto bad;
+        if (buf[k] == '%') {
+            if (k+2 >= n-1) goto bad;
+            for (int j = 1; j <= 2; ++j)
+                if (!((buf[k+j] >= '0' && buf[k+j] <= '9') ||
+                      (buf[k+j] >= 'A' && buf[k+j] <= 'F') ||
+                      (buf[k+j] >= 'a' && buf[k+j] <= 'f'))) goto bad;
+            if (buf[k+1] == '0' && buf[k+2] == '0') goto bad;
+            k += 2;
+        }
     }
-    clients[i].out = snprintf(clients[i].reply, sizeof clients[i].reply, "Q2SPOT/1\n%s\t%s\t%s\t\n", id, status, message);
+    end = start;
+    while (end < n-1 && buf[end] >= '0' && buf[end] <= '9') ++end;
+    if (end == start || end-start > 10 || buf[end] != '\t') goto bad;
+    memcpy(clients[i].id, buf + start, end-start);
+    clients[i].id[end-start] = 0;
+    start = ++end;
+    while (end < n-1 && buf[end] != '\t') {
+        if (buf[end] < 'a' || buf[end] > 'z') goto bad;
+        ++end;
+    }
+    if (end == start) goto bad;
+    retry_remote = 1;
+    if (!configured) local_reply(i, "error", "Copy remote to .soloify (see the Soloify guide)");
+    else if (!online) local_reply(i, "offline", "Can't reach the Spotify bridge");
+    else {
+        unsigned char payload[8196];
+        int reset = (end-start == 4 && !memcmp(buf+start, "play", 4)) ||
+                    (end-start == 4 && !memcmp(buf+start, "skip", 4));
+        clients[i].correlation = ++next_request;
+        put_be32(payload, clients[i].correlation);
+        memcpy(payload + 4, buf, n);
+        if (relay_send('q', payload, n+4)) local_reply(i, "offline", "Bridge disconnected");
+        else {
+            clients[i].waiting = 1;
+            if (reset) {
+                held = 0;
+                count = first = 0;
+                *prime = 0;
+                audio_clear();
+                ++resetting;
+            }
+        }
+    }
+    return;
+bad:
+    local_reply(i, "bad", "Malformed request");
 }
 static void browse(void) {
     for (int i = 0; i < CLIENTS; ++i) {
@@ -276,13 +326,18 @@ static void browse(void) {
         if (clients[i].fd < 0) {
             if ((r = accept(browser, NULL, NULL)) < 0) continue;
             clients[i].fd = r;
-            clients[i].n = clients[i].out = clients[i].sent = clients[i].bad = 0;
+            clients[i].n = clients[i].out = clients[i].sent = clients[i].bad = clients[i].waiting = 0;
+            clients[i].id[0] = 0;
             clients[i].buf[0] = 0;
-            clients[i].end = now_ms() + 2000;
+            clients[i].end = now_ms() + 11000;
             fcntl(r, F_SETFD, FD_CLOEXEC);
             fcntl(r, F_SETFL, fcntl(r, F_GETFL) | O_NONBLOCK);
         }
-        if (!clients[i].out) {
+        if (clients[i].waiting && now_ms() >= clients[i].end) {
+            local_reply(i, "offline", "Browse timed out; Retry");
+            clients[i].end = now_ms() + 500;
+        }
+        if (!clients[i].out && !clients[i].waiting) {
             int n = clients[i].n;
             char discard[1024];
             r = read(clients[i].fd, n == 8192 ? discard : clients[i].buf + n,

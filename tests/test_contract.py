@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from relay_rig import Relay, until
+from soloify import browse as protocol
 from soloify import server, wire
 
 
@@ -221,12 +222,22 @@ async def test_seek_discards_old_audio_and_metadata(contract):
     await until(lambda: len(children(relay.proc.pid)) == 2)
 
 
-async def test_minimal_browser_and_bad_requests(contract):
-    _, _, base = contract
-    assert await browse(base) == b"Q2SPOT/1\n7\tok\t\t\n"
-    assert b"\tok\tsoloify step 3\t\n" in await browse(base, b"Q2SPOT/1\n8\tcaps\n")
-    assert b"\tunsupported\t" in await browse(base, b"Q2SPOT/1\n9\tliked\n")
-    for bad in (b"x", b"Q2SPOT/1\nx\taccount\n", b"x" * 9000, b"Q2SPOT/1\n7\tacc\0ount\n"):
+async def test_browser_forwarding_and_bad_requests(contract):
+    _, peer, base = contract
+    task = asyncio.create_task(browse(base))
+    await until(lambda: any(k == wire.BROWSE_REQUEST for k, _ in peer.frames))
+    payload = next(p for k, p in peer.frames if k == wire.BROWSE_REQUEST)
+    assert payload[4:] == b"Q2SPOT/1\n7\taccount\n"
+    reply = protocol.response("7", rows=[("account", "spotify:user:U", "U", "", "", "")])
+    await peer.send(wire.BROWSE_RESPONSE, payload[:4] + reply)
+    assert await task == reply
+    for bad in (
+        b"x",
+        b"Q2SPOT/1\nx\taccount\n",
+        b"x" * 9000,
+        b"Q2SPOT/1\n7\tacc\0ount\n",
+        b"Q2SPOT/1\n7\tsearch\ttracks\tbad%\n",
+    ):
         assert b"\tbad\t" in await browse(base, bad)
 
 
