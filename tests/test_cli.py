@@ -10,8 +10,10 @@ def test_version(capsys):
     assert capsys.readouterr().out.strip() == f"soloify {__version__}"
 
 
-def test_unimplemented_command_fails(tmp_path):
+def test_login_requires_client_id(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
     assert cli.main(["--data", str(tmp_path), "login"]) == 2
+    assert "--client-id" in capsys.readouterr().err
 
 
 def test_remote_lists_lan_then_wan(tmp_path, capsys):

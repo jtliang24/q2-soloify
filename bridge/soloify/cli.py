@@ -1,5 +1,4 @@
-"""The soloify command: serve runs the bridge, remote prints the card's .soloify/remote. login is
-PLAN.md's step 4."""
+"""Serve the bridge, authorize Spotify browsing, or print card configuration."""
 
 import argparse
 import asyncio
@@ -9,7 +8,7 @@ import signal
 import sys
 from pathlib import Path
 
-from . import __version__, audio, server, soloist, ws
+from . import __version__, audio, server, soloist, spotify, ws
 from .player import Covers, Player
 
 PORT = 7443
@@ -109,7 +108,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--lan", action="append", help="LAN address, tried first (default: this one's)")
     p.add_argument("--wan", action="append", help="name or address from outside, tried next")
     p.add_argument("--port", type=int, default=PORT)
-    sub.add_parser("login", help="authorize the Spotify Web API")
+    p = sub.add_parser("login", help="authorize the Spotify Web API")
+    p.add_argument("--client-id", default=os.environ.get("SPOTIFY_CLIENT_ID"))
+    p.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -119,8 +120,13 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(serve(args))
     if args.command == "remote":
         return remote(args)
-    print(f"soloify {args.command}: not implemented yet", file=sys.stderr)
-    return 2
+    try:
+        asyncio.run(spotify.login(args.data, args.client_id, args.timeout))
+    except (spotify.APIError, OSError) as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    print("Spotify browsing authorized")
+    return 0
 
 
 if __name__ == "__main__":
