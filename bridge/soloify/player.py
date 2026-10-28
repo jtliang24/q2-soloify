@@ -83,6 +83,7 @@ class Player:
         self.paused_by_us = False
         self.relay: asyncio.StreamWriter | None = None
         self.sent: tuple | None = None
+        self.deferred = False  # a control's state follows its ordered boundary
         self.cover: tuple[str, bytes] | None = None  # (track uri, JPEG)
         self.fetching: str | None = None
         self.tasks: set[asyncio.Task] = set()
@@ -154,7 +155,7 @@ class Player:
         if self.pending:
             self.pending.cancel()
             self.pending = None
-        if self.relay is None or self.relay.is_closing():
+        if self.deferred or self.relay is None or self.relay.is_closing():
             return
         key = (self.state.key(), self.state.state != "none" and self._has_cover())
         if key == self.sent:

@@ -76,6 +76,7 @@ class Rig:
         Player.PAUSE_SETTLE = 0
         self.soloist = FakeSoloist()
         player = self.soloist.player = Player(self.soloist)
+        player.SETTLE = 0
         player.event({"type": "auth_state", "logged_in": True, "is_active": True})
         player.event({"type": "playback_changed", "status": "playing" if playing else "paused"})
         self.encoders = []
@@ -133,8 +134,14 @@ async def test_after_a_stall_audio_resumes_once_acks_drain():
 async def test_relay_pause_and_resume():
     rig = Rig()
     await rig.send(wire.AUDIO_REQUEST, b"1")
+    await rig.send(wire.CONTROL, b"s")
     await rig.send(wire.AUDIO_REQUEST, b"0 pause")
     assert rig.encoders[0].stopped
+    await rig.send(wire.AUDIO_REQUEST, b"1")
+    assert rig.soloist.calls == [("pause",)]
+    assert not rig.session.player.paused_by_us
+    assert len(rig.encoders) == 1  # a delayed probe cannot undo the user's pause
+    await rig.send(wire.CONTROL, b"P")
     await rig.send(wire.AUDIO_REQUEST, b"1")
     assert rig.soloist.calls == [("pause",), ("play",)]
 

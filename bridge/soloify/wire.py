@@ -20,6 +20,7 @@ CONTROL = b"c"  # a control datagram from Q2 Pod: p, P, s, n, b or S<ms>
 AUDIO = b"a"  # u32 sequence, then one Opus packet
 STATE = b"s"  # the status file's key=value lines, less at=
 COVER = b"j"  # a track id, a newline, then the track's cover JPEG
+BOUNDARY = b"x"  # completed control, echoed; old audio has drained before a seek/skip boundary
 
 _HEAD = struct.Struct(">cI")
 

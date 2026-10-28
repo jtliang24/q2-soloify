@@ -125,6 +125,7 @@ class Session:
         self.writer: asyncio.StreamWriter | None = None
         self.sent = self.acked = 0
         self.tasks: set[asyncio.Task] = set()
+        self.lock = asyncio.Lock()
 
     @property
     def streaming(self) -> bool:
@@ -148,7 +149,7 @@ class Session:
                 elif kind == wire.ACK:
                     self.acked = wire.ack_count(payload)
                 elif kind == wire.CONTROL:
-                    await self.player.control(payload)
+                    await self.control(payload)
                 elif kind == wire.STATS:
                     log.info(
                         "relay: %s inflight=%d",
@@ -171,10 +172,16 @@ class Session:
             pass
 
     async def want(self) -> None:
+        async with self.lock:
+            await self._want()
+
+    async def _want(self) -> None:
         if self.streaming or self.halting:
             return
         if self.inflight_ms() > self.limit // 2:
             return  # what's in flight from before a stall hasn't drained yet
+        if self.player.ws and not self.player.state.playing and not self.player.paused_by_us:
+            return
         await self.player.resume()
         self.encoder = self.encoder_factory()
         await self.encoder.start()
@@ -182,16 +189,46 @@ class Session:
         self.pump = asyncio.create_task(self._pump(self.encoder))
 
     async def halt(self, reason: str) -> None:
+        async with self.lock:
+            await self._halt(reason)
+
+    async def _halt(self, reason: str) -> None:
         if not self.streaming:
             return
         encoder, self.encoder = self.encoder, None
         log.info("audio off: %s (inflight %d ms)", reason, self.inflight_ms())
         self.halting = asyncio.current_task()
         try:
-            await self.player.pause()
+            if reason not in ("pause", "control"):
+                await self.player.pause()
             await encoder.stop()
+            if self.pump and self.pump is not asyncio.current_task():
+                await self.pump
         finally:
             self.halting = None
+
+    async def control(self, payload: bytes) -> None:
+        """Explicit user pauses never become stall pauses. Seek/skip drains the old encoder
+        before its ordered boundary; a relay discards those packets until it sees that marker."""
+        async with self.lock:
+            self.player.deferred = True
+            try:
+                reset = payload[:1] in (b"n", b"b", b"S")
+                if reset:
+                    await self._halt("control")
+                await self.player.control(payload)
+                if payload[:1] == b"s":
+                    await asyncio.sleep(self.player.PAUSE_SETTLE)
+                    await self._halt("pause")
+                # Soloist sends the new state around its command response. Settle the burst
+                # before the snapshot, even when the command didn't change the state.
+                await asyncio.sleep(self.player.SETTLE)
+                self.writer.write(wire.frame(wire.BOUNDARY, payload))
+                self.player.sent = None
+                self.player._send_cover()
+            finally:
+                self.player.deferred = False
+            self.player.flush()
 
     async def _pump(self, encoder: Encoder) -> None:
         # Never awaits the writer: a blocked link must not back up into ffmpeg and PulseAudio,
