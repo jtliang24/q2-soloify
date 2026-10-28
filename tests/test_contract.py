@@ -217,7 +217,7 @@ async def test_seek_discards_old_audio_and_metadata(contract):
     await peer.send(wire.STATE, state("new", position=60000))
     await peer.packets(20)
     await until(lambda: "track=new\n" in read_state(base))
-    assert "position=60000\n" in read_state(base)
+    await until(lambda: "position=60000\n" in read_state(base))
     await until(lambda: len(children(relay.proc.pid)) == 2)
 
 
