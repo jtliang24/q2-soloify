@@ -1,6 +1,6 @@
 # The card's files
 
-What goes in `.soloify/` on the device's card (PLAN.md section 1). Step 3 adds `run`, the restart loop with Q2 Pod's pid file, and the relay's `-q` device contract. The Soloify firmware and Apps rows arrive in step 5; the existing Spotify page was used for the temporary compatibility check ([results](../docs/step3.md)).
+What goes in `.soloify/` on the device's card (PLAN.md section 1). Step 3 adds `run`, the restart loop with Q2 Pod's pid file, and the relay's `-q` device contract. Step 4 adds browsing over TLS; its [M1 runbook](../docs/step4-runbook.md) is pending execution. The Soloify firmware and Apps rows arrive in step 5; the existing Spotify page was used for the temporary compatibility check ([results](../docs/step3.md)).
 
 | File | What |
 | --- | --- |

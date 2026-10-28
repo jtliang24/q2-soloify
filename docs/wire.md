@@ -1,6 +1,6 @@
 # The relay ↔ bridge wire
 
-Version 1, through step 3: audio, state, covers, controls and their ordered boundaries (PLAN.md). Full Q2SPOT/1 forwarding comes with step 4; step 3 serves only local page access and error replies. One TLS connection, which the relay on the card opens to the bridge, carries everything. Update the bridge and relay together for step 3's control boundaries.
+Version 1, through step 4: audio, state, covers, controls, ordered boundaries and Q2SPOT/1 browsing (PLAN.md). One TLS connection, which the relay on the card opens to the bridge, carries everything. Update bridge and relay together for the control boundaries and browsing frames.
 
 ## Connection
 
@@ -21,7 +21,7 @@ Version 1, through step 3: audio, state, covers, controls and their ordered boun
 | `j` | bridge → relay | a track id, `\n`, then that track's cover as a JPEG |
 | `x` | bridge → relay | the completed control's bytes, echoed. For skip/seek, the previous encoder has stopped and drained before this frame. The current cover and a forced state snapshot follow it. |
 
-Reserved for step 4: `q` Q2SPOT/1 request (relay → bridge), `r` Q2SPOT/1 response (bridge → relay). The relay ignores frame types it doesn't know.
+`q` carries a correlated Q2SPOT/1 request (relay → bridge); `r` carries its response (bridge → relay). See Browsing below. The relay ignores frame types it does not know.
 
 ## State and covers
 
@@ -48,3 +48,44 @@ Each `A 1` starts a new encoder on the bridge, and each stop ends it, so nothing
 Flow control is in the application, not left to TCP. Kernel buffers and container port proxies can hold tens of seconds of audio, which would play late as a backlog. So the bridge counts packets sent minus packets acked. When that goes over its in-flight limit, the link has stalled. The limit is the relay's buffer target from `A 1` (at least 300 ms), else `serve --inflight` (2 s). So a stall longer than the relay's buffer pauses Soloist, and what's left in flight when the link returns is about one buffer, plus what the encoder flushes as Soloist pauses. The bridge then pauses Soloist and ends the encoder, and waits for the relay's next `A 1`.
 
 The relay holds the only buffer. It starts its sink once it holds its target (`buffer=`, or `-b`). It then feeds the decoder in real time, at most 300 ms ahead, rather than as fast as the pipe takes it: a pipe bounds bytes, and silence's packets are small enough that seconds of them would wait there uncounted. On an underrun it rebuffers to the target while audio keeps coming, without stopping Soloist, so nothing is missed. The relay never declares a stall itself: a 1 s hiccup on a 1 s LAN target would stop Soloist, when the bridge's in-flight limit rides it out. While it wants audio it repeats `A 1` every second, which the bridge ignores while it streams. After a stall the bridge restarts on the first `A 1` that comes once the acks have brought in-flight back under half the limit. So audio resumes only when the link carries data both ways, and the audio from before the stall, still in flight, plays on without a gap. With no bytes for 6 s while it wants audio, the relay takes the link for dead and reconnects; TCP keepalive (5 s idle, three 2 s probes) catches a dead link otherwise.
+
+## Browsing (step 4)
+
+`q` (relay → bridge) and `r` (bridge → relay) are active. Each payload starts with a
+four-byte, big-endian correlation ID, followed by the unchanged Q2SPOT/1 text.
+The ID belongs to the relay transaction, independently of the firmware's decimal
+request ID inside the text. IDs increase across reconnects; a reply is accepted
+only for a currently waiting slot. Update bridge and relay together.
+
+The relay has four client slots, accepts at most 8 KiB of request text and returns
+at most 64 KiB of response text. It forwards after the client shuts down its write
+side. Local malformed/configuration/offline errors remain local. A transaction
+has an 11-second deadline from accept, with up to 500 ms to deliver its timeout
+reply (inside the firmware's 15-second deadline). Disconnect fails waiting clients;
+late replies are discarded. Requests are never retried or replayed automatically.
+
+The bridge permits four browse handlers per relay and gives each 10 seconds.
+Handlers run separately from the frame reader, so Web API waits do not delay audio
+acks or stats. Playback changes take the same lock as ordinary controls. `play`
+and queue `skip` clear the relay's output immediately; the bridge drains its
+encoder, performs the action, then sends `x Q`, cover and forced state before `r`.
+A rejected request also releases its reset. A request that expires before acquiring
+the control lock releases its reset without dispatching an action. Disconnect
+cancels handlers and pending controls; only explicit new requests can change playback.
+
+Q2SPOT/1 text follows q2-pod's [browser contract](../../q2-pod/docs/librespot.md):
+percent-escaped fields, six fields per row, at most 50 rows, 255-byte display
+fields, 120-byte messages, and opaque cursors up to 1 KiB. This bridge binds cursors
+to operation and arguments and reconstructs API paths locally; it never follows a
+client-supplied URL. Artist pages permit an optional continuation cursor, although
+older firmware sends only the artist URI. Search and artist-album pages use the
+upstream maximum of 10. Artist pages intentionally show albums because development
+mode removes top tracks. Missing profile fields remain blank.
+
+`caps` advertises account/library/details/search/play/queue/settings operations.
+Sign-out and downloads are unsupported. Without OAuth, account/library requests
+say to run `soloify login --client-id ID` on the server; existing Connect playback
+continues. Queue/settings use the local Soloist WebSocket, with one pending
+command/query, a three-second deadline, and a new connection after a timeout to
+exclude late responses. Queue skip re-fetches and checks URI and entry UID before
+each skip; external changes can still race after the final check.
