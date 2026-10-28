@@ -1,6 +1,6 @@
 # q2-soloify
 
-Soloify plays Spotify on Q2 Pod devices (Shanling Q2, M1 Plus) through Spotify's own [Soloist](https://developer.spotify.com/documentation/soloist), for accounts librespot can't play. Soloist runs on a computer at home; the bridge here sends its audio to a relay on the device's card. See [PLAN.md](PLAN.md). So far the bridge sends audio, state, covers and controls (PLAN.md's steps 1 and 2), and the relay on the device plays the audio; the device's side of the state and controls, and browsing, come next.
+Soloify plays Spotify on Q2 Pod devices (Shanling Q2, M1 Plus) through Spotify's own [Soloist](https://developer.spotify.com/documentation/soloist), for accounts librespot can't play. Soloist runs on a computer at home; the bridge here sends its audio to a relay on the device's card. See [PLAN.md](PLAN.md). The bridge and relay now carry audio, state, covers and controls (PLAN.md's steps 1–3). The relay works through the existing Spotify page; browsing comes next. [Step 3](docs/step3.md) records the M1 checks and the remaining firmware UI coverage.
 
 Spotify's terms forbid redistributing Soloist, so this repo never holds it. Each machine fetches its own build, and each user makes their own API key (with Spotify Premium). `.gitignore` keeps `soloist_release_*` and `*.key` out of git.
 
@@ -46,7 +46,7 @@ Pairing needs the phone's Spotify app on Soloist's LAN, but only once: a paired 
 | --- | --- |
 | `bridge/soloify/` | the bridge (Python): TLS listener, Soloist and its WebSocket, state and covers, audio |
 | `relay/` | the card's relay (C) and its build |
-| `card/` | the rest of the card's `.soloify/`: `aplay.sh`, `remote.sample`, `log.sh` |
+| `card/` | the launcher `run`, `aplay.sh`, `remote.sample` and measurement helper `log.sh` |
 | `tests/` | the bridge's and the relay's tests |
 | `tools/soloist-fetch`, `tools/soloist-run`, `tools/soloify-sink` | fetch and run Soloist; the null sink and its level (POSIX sh, also used in the image) |
 | `tools/soloify-stall` | step 1's forced stall: blocks the bridge's port for a while (root) |
