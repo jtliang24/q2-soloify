@@ -21,6 +21,7 @@ class SoloistWS:
     restart). Each event goes to on_event as it arrives; on connect Soloist sends auth_state, and
     playback_state when logged in, so the handler starts from a full picture each time."""
 
+    TIMEOUT = 3
     RETRY = (0.2, 5.0)  # the first wait and the longest between tries
 
     def __init__(self, port_file: Path, on_event: Callable[[dict], None], host: str = "127.0.0.1"):
@@ -28,6 +29,10 @@ class SoloistWS:
         self.on_event = on_event
         self.host = host
         self.ws: aiohttp.ClientWebSocketResponse | None = None
+        self.lock = asyncio.Lock()
+        self.pending = None
+        self.expected = None
+        self.command_name = None
 
     @property
     def connected(self) -> bool:
@@ -55,6 +60,7 @@ class SoloistWS:
                     finally:
                         if self.ws is not None:
                             self.ws = None
+                            self._fail(ConnectionError("Soloist disconnected"))
                             self.on_event(GONE)
                 await asyncio.sleep(wait)
                 wait = min(wait * 2, self.RETRY[1])
@@ -70,19 +76,47 @@ class SoloistWS:
                 continue
             if not isinstance(event, dict):
                 continue
-            if event.get("type") == "error":
-                log.warning("soloist: %s", event.get("message"))
+            kind = event.get("type")
+            if kind == "error":
+                self._fail(ConnectionError("Soloist refused command"))
             else:
+                pending = self.pending
+                if pending and not pending.done() and kind == self.expected:
+                    if kind != "command_result" or event.get("command") == self.command_name:
+                        pending.set_result(event)
                 self.on_event(event)
 
+    def _fail(self, error):
+        if self.pending and not self.pending.done():
+            self.pending.set_exception(error)
+
+    async def request(self, name: str, **fields) -> dict:
+        """No request IDs exist in Soloist's API. One query/control may be outstanding.
+
+        A timeout closes the connection so a late response cannot satisfy the next command.
+        """
+        async with self.lock:
+            if not self.connected:
+                raise ConnectionError("Soloist disconnected")
+            self.expected = {
+                "get_queue": "queue_changed",
+                "get_state": "playback_state",
+                "get_auth_state": "auth_state",
+            }.get(name, "command_result")
+            self.command_name = name
+            self.pending = asyncio.get_running_loop().create_future()
+            try:
+                await self.ws.send_json({"type": "command", "command": name, **fields})
+                return await asyncio.wait_for(self.pending, self.TIMEOUT)
+            except (TimeoutError, asyncio.CancelledError):
+                await self.ws.close()
+                raise
+            finally:
+                self.pending = None
+
     async def command(self, name: str, **fields) -> bool:
-        """Sends a command; False when there's no connection. Its effects arrive as events."""
-        if not self.connected:
-            log.info("soloist: no websocket for %s", name)
-            return False
         try:
-            await self.ws.send_json({"type": "command", "command": name, **fields})
-        except (aiohttp.ClientError, ConnectionError) as e:
-            log.info("soloist: %s not sent: %s", name, e)
+            await self.request(name, **fields)
+            return True
+        except (aiohttp.ClientError, ConnectionError, TimeoutError):
             return False
-        return True
