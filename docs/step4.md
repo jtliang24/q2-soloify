@@ -1,9 +1,9 @@
 # Step 4: browsing and laptop verification
 
-Implemented on the laptop, 2026-10-28. **M1 installation and verification have not
-been performed for step 4.** No firmware or card files were changed. The next
-device pass follows [step4-runbook.md](step4-runbook.md), including restoration
-before planning fixes. Step 3's historical hardware results remain in [step3.md](step3.md).
+Implemented on the laptop, 2026-10-28. The M1 pass ran the same evening following
+[step4-runbook.md](step4-runbook.md) and its results are [below](#m1-pass-results). No
+firmware was flashed; card files were temporarily replaced and restored. Step 3's
+historical hardware results remain in [step3.md](step3.md).
 
 ## Implementation
 
@@ -155,13 +155,60 @@ git diff --check
 nix develop -c python relay/build.py --rootfs ../q2-pod/build-m1/stock.squashfs
 ```
 
-## Pending M1 pass
+## M1 pass results
 
-All step 4 hardware checks remain pending: menu/UI routes, page navigation,
-artwork and packet-clock position through the M1 sink, actual audio controls,
-context/duplicate/queue selection, browsing during playback, Retry/reconnect,
-local-music handover, idle stop and shared/UI stop routes. The installed older hub
-may lack artist continuation, scrub, Stop Streaming Services or Rockbox routes;
-record them as deferred individually. No firmware flash is required. Follow the
-[home-network runbook](step4-runbook.md), complete the pass and restore original
-files/settings before planning fixes.
+Run 2026-10-28 on the home network, laptop wired and the M1 on Wi-Fi in the same
+subnet, with the laptop firewall open for TCP 7443. Soloify revision `1e9fe94`, q2-pod
+`b504ee0`, Soloist 1.3.10.16 (build 1793016086), relay SHA-256 `16bf4b30…41a9` (host and
+installed copy matched). Firmware: Buildroot 2020.02.1 build with the older hub UI, so
+Streaming → Spotify was the route (`.spotify/` temporarily holding the relay as
+`librespot`, `run`, `aplay.sh` and a temporary `remote`; the originals were backed up
+and checksummed first). The user operated the M1; screenshots and device state came from
+q2remote and Spotify's Web API read-only. Raw logs and screenshots stay private in
+`build/step4-m1/` (they contain identifiers).
+
+| ID | Result | Notes |
+| --- | --- | --- |
+| F01 | Pass | Correct display name; no Premium shown because Spotify omits it for development-mode apps |
+| F02 | Pass, limited | Sign Out asks to confirm, then shows "Sign out on the server" for about one second. The 17-operation list was not visible on the device; laptop tests are the evidence |
+| F03 | Pass, partial | Playlists, Liked Songs, Albums, Artists (5) load; "Ø" and U+2019 pass through. Percent/tab/newline names not available: deferred |
+| F04 | Pass, partial | Album order matched Spotify (rows 1–6 compared); artist shows albums with a More row. The restriction message is not displayed by this firmware |
+| F05 | **Fail** | All four search categories give "Invalid operation arguments" |
+| F06 | Pass, partial | Liked Songs page 2 and artist "More" continue from the right position. Playlists and search continuation untested |
+| F07 | Deferred | No editorial playlist reachable: Spotify's `/me/playlists` returned 58 playlists, none Spotify-owned. Laptop live check covers `unavailable` |
+| F08 | Pass | Selected middle row plays in playlist context; next track matches the list. Start delay about 1.5 s. Continuation beyond a page not exercised |
+| F09 | Pass | Playlist with 142 tracks and three duplicate pairs: each copy resolved to its own neighbor (first attempt had tapped the earlier copy) |
+| F10 | Pass | Native Liked Songs context accepted (`collection`); no URI-list fallback |
+| F11 | Pass | Title, artist, album, artwork and advancing position agree. The state file's position is event-time only |
+| F12 | Partial | Hardware pause stops and reaps the sink and releases ALSA; resume position is right, but resume has an audible blip (split-second audio, instant stop, restart). Same blip with a Connect pause from the phone. No on-screen pause control |
+| F13 | Partial | Next is clean. Previous lands on the right track after a double press but gave about 5 s of silence (ring 0, underruns) and a stall. UI scrub/seek absent: deferred |
+| F14 | Pass | Enqueue works from hold-Play/Pause and long press with no visible feedback; queue row 7 started with the six earlier entries skipped, in one audio cycle |
+| F15 | Pass | Stale row gives `unavailable` with a refresh message (too long for one line), no skip; the refreshed first row then plays. Each rejected request cuts audio for about 0.8 s |
+| F16 | Pass | Shuffle on reshuffled the queue and off restored it, with no audio interruption |
+| F17 | Pass, partial | Off → All → One → Off verified; this firmware cannot go One → All, so that transition is deferred |
+| I01 | Pass | About five minutes of browsing while playing: ring 620–700 ms, no growth, no new stalls |
+| I02 | Pass | Bridge stopped: "Can't Reach the Spotify Bridge" with Retry; Retry recovered after restart with the same data directory, certificate and token. The 12 s limit was not timed |
+| I03 | Pass | Play and enqueue submitted offline were rejected and not replayed on reconnect (empty queue and no player before and after) |
+| I04 | Pass, with finding | 3 s block: bounded recovery but extra stalls within about 15 s. 15 s block: reconnect, resumed from the paused position, no accumulated delay |
+| I05 | Pass | Local player took ALSA and Soloist paused; reopening Spotify handed the sink back |
+| I06 | Pass | Launcher, relay, sink and state gone about 33 s after pause (about 17 s after leaving the page) |
+| I07 | Partial | Stop Streaming Services works; no Rockbox route: deferred |
+| I08 | Pass | Stop command removed launcher, relay, `ffmpeg` and `aplay` (transient zombies reaped within about 15 s). The installed firmware's definition is identical to the runbook's |
+
+### Findings for fix planning
+
+Plan these only now that the device is restored.
+
+1. **F05 search.** The bridge answers the exact request the firmware code builds, and the laptop live search passed. A missing or empty term reproduces the message. A candidate cause is the firmware's search handler clearing its term when the box closes (`patch/spotify.c`, `searched()`); unverified. Capturing the request text needs request logging in the bridge or relay `-v`, which this pass did not change.
+2. **Resume blip (F12)** from both the hardware button and Connect pause.
+3. **Previous after a rapid double press (F13):** about 5 s of silence with relay underruns.
+4. **Spontaneous stalls** (unacknowledged audio at the 1000 ms threshold, recovering in 0.6–1.8 s) during ordinary playback, and re-stalls after a link block (I04). An earlier theory that screenshot traffic caused them was wrong: stalls also occurred while nothing was being captured. The relay buffer ran at 340–700 ms against a 1000 ms target.
+5. **Rejected requests interrupt audio** (stale queue, offline play) because the relay output is cleared before the action is validated.
+6. **Reopening Spotify resumed a paused track** without a play press.
+7. **Minor UX:** no enqueue acknowledgment, the stale-queue and Sign Out messages are cramped or fleeting, the artist restriction message is not shown on this firmware, a small gap follows U+2019 in titles, and volume read 13 after being set to 10 (cause unknown).
+8. **Upstream:** editorial playlists do not appear in a development-mode account's playlist list.
+9. **Runbook corrections:** the M1 has no `nc` (telnet worked for the TCP check), `soloify` was not on `PATH` in `nix develop` (the bridge ran with `PYTHONPATH=bridge`), and the first Soloist login after starting the bridge failed once and succeeded on restart.
+
+### Restoration
+
+The original `librespot`, `run` and `aplay.sh` pass `sha256sum -c`; `remote` and `q2-soloify` were absent originally and are absent again; the on-card backup `.soloify-step4-backup` is kept. The test bridge and Soloist are stopped, the generated `remote` was shredded, no stall table remains, ALSA is closed and no relay is running. The restored original backend launches (it reports "Spotify refused this account", the known audio-key limitation).
