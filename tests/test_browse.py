@@ -270,8 +270,8 @@ async def test_missing_oauth_keeps_existing_playback(tmp_path):
         await api.close()
 
 
-async def test_cancel_before_control_lock_releases_reset_without_action(browser):
-    from soloify import audio, wire
+async def test_cancel_before_control_lock_leaves_audio_untouched(browser):
+    from soloify import audio
 
     class Writer:
         def __init__(self):
@@ -289,7 +289,7 @@ async def test_cancel_before_control_lock_releases_reset_without_action(browser)
     with pytest.raises(asyncio.CancelledError):
         await task
     session.lock.release()
-    assert session.writer.data == [wire.frame(wire.BOUNDARY, b"Q")]
+    assert session.writer.data == []
     assert not browser.api.calls and not browser.player.ws.calls
 
 

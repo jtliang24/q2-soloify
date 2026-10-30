@@ -4,12 +4,15 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import re
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
 from .spotify import APIError
 from .state import Track
+
+log = logging.getLogger("soloify")
 
 OPS = (
     "caps account playlists playlist liked albums artists album artist search play queue skip "
@@ -124,7 +127,7 @@ class Browser:
                     async with self.change_lock:
                         if boundary:
                             result = await boundary(
-                                lambda: self.dispatch(op, args), op in ("play", "skip")
+                                lambda: self.prepare(op, args), op in ("play", "skip")
                             )
                         else:
                             result = await self.dispatch(op, args)
@@ -190,6 +193,7 @@ class Browser:
                 raise APIError("bad", "Invalid operation arguments")
             kind = args[0][:-1]
             path, params["q"], params["type"] = "/search", args[1], kind
+            log.info("search category=%s term_bytes=%d", args[0], len(args[1].encode()))
         else:
             context = args[0]
             ident = uri_id(context, "artist" if op == "artist" else op)
@@ -337,25 +341,49 @@ class Browser:
                     if t:
                         rows.append(("track", t.uri, t.title, t.artist, "", str(i)))
                 return rows, "", ""
-            if not args[0].isdigit() or not 0 <= int(args[0]) < min(len(upcoming), 50):
-                raise APIError("unavailable", "Queue position changed; open Queue again")
-            pos = int(args[0])
-            if upcoming[pos].get("item", {}).get("uri") != args[1]:
-                raise APIError("unavailable", "Queue changed; open Queue again")
-            for i in range(pos + 1):
-                fresh = await self.local("get_queue", limit=50)
-                expected = upcoming[i]
-                first = (fresh.get("upcoming") or [{}])[0]
-                if first.get("item", {}).get("uri") != expected.get("item", {}).get(
-                    "uri"
-                ) or first.get("uid") != expected.get("uid"):
-                    raise APIError("unavailable", "Queue changed; open Queue again")
-                await self.local("skip_next")
+            return await (await self.prepare_skip(args, upcoming))()
         elif op == "play":
-            return await self.play(args)
+            return await (await self.prepare_play(args))()
         return empty
 
-    async def play(self, args):
+    async def prepare(self, op, args):
+        """Read-only preflight under the session control lock, while capture keeps running."""
+        if op == "play":
+            return await self.prepare_play(args)
+        if op == "skip":
+            q = await self.local("get_queue", limit=50)
+            return await self.prepare_skip(args, q["upcoming"])
+        return lambda: self.dispatch(op, args)
+
+    @staticmethod
+    def check_queue(upcoming, expected):
+        first = (upcoming or [{}])[0]
+        if first.get("item", {}).get("uri") != expected.get("item", {}).get("uri") or first.get(
+            "uid"
+        ) != expected.get("uid"):
+            raise APIError("unavailable", "Queue changed; open Queue again")
+
+    async def prepare_skip(self, args, upcoming):
+        if not args[0].isdigit() or not 0 <= int(args[0]) < min(len(upcoming), 50):
+            raise APIError("unavailable", "Queue position changed; open Queue again")
+        pos = int(args[0])
+        if upcoming[pos].get("item", {}).get("uri") != args[1]:
+            raise APIError("unavailable", "Queue changed; open Queue again")
+        expected = upcoming[: pos + 1]
+        fresh = await self.local("get_queue", limit=50)
+        self.check_queue(fresh.get("upcoming"), expected[0])
+
+        async def execute():
+            for entry in expected:
+                # Capture drainage takes time: also check immediately before EVERY mutation.
+                fresh = await self.local("get_queue", limit=50)
+                self.check_queue(fresh.get("upcoming"), entry)
+                await self.local("skip_next")
+            return [], "", ""
+
+        return execute
+
+    async def prepare_play(self, args):
         context = args[0]
         body = {}
         if len(args) == 1:
@@ -376,24 +404,8 @@ class Browser:
             ):
                 raise APIError("bad", "Invalid operation arguments")
             body = {"context_uri": context, "offset": {"position": int(args[1])}}
-        # Soloist persists its Connect ID; match it to the Web API, never to the display name.
-        try:
-            device = (self.data / "soloist-state/.device_id").read_text().strip()
-        except OSError as e:
-            raise APIError(
-                "unavailable", "Soloist device ID is missing; pair it on the server"
-            ) from e
-        devices = await self.api.request("GET", "/me/player/devices")
-        if not device or not any(d.get("id") == device for d in devices.get("devices", [])):
-            raise APIError("unavailable", "Soloist device is unavailable; activate it in Spotify")
-        message = ""
-        try:
-            await self.api.request(
-                "PUT", "/me/player/play", params={"device_id": device}, json=body
-            )
-        except APIError as e:
-            if not context.endswith(":collection") or e.code not in (400, 403, 404):
-                raise
+        uris = []
+        if context.endswith(":collection"):
             rows = next(
                 (
                     r
@@ -404,9 +416,31 @@ class Browser:
             )
             uris = [r[1] for r in rows if int(r[5]) >= int(args[1])]
             if not uris:
-                raise APIError("unavailable", "Open Liked Songs again before playing") from e
-            await self.api.request(
-                "PUT", "/me/player/play", params={"device_id": device}, json={"uris": uris}
-            )
-            message = "Liked Songs plays to the end of this fetched page only"
-        return [], "", message
+                raise APIError("unavailable", "Open Liked Songs again before playing")
+        # Soloist persists its Connect ID; match it to the Web API, never to the display name.
+        try:
+            device = (self.data / "soloist-state/.device_id").read_text().strip()
+        except OSError as e:
+            raise APIError(
+                "unavailable", "Soloist device ID is missing; pair it on the server"
+            ) from e
+        devices = await self.api.request("GET", "/me/player/devices")
+        if not device or not any(d.get("id") == device for d in devices.get("devices", [])):
+            raise APIError("unavailable", "Soloist device is unavailable; activate it in Spotify")
+
+        async def execute():
+            message = ""
+            try:
+                await self.api.request(
+                    "PUT", "/me/player/play", params={"device_id": device}, json=body
+                )
+            except APIError as e:
+                if not context.endswith(":collection") or e.code not in (400, 403, 404):
+                    raise
+                await self.api.request(
+                    "PUT", "/me/player/play", params={"device_id": device}, json={"uris": uris}
+                )
+                message = "Liked Songs plays to the end of this fetched page only"
+            return [], "", message
+
+        return execute

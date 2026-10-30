@@ -1,9 +1,9 @@
 # Step 4: home-network M1 verification
 
-This is a future device pass. The laptop implementation and results are in
-[step4.md](step4.md). Do not flash firmware during this pass. Complete the checklist,
-collect evidence, restore the device, then plan fixes. Record failures without
-changing the implementation or firmware halfway through the pass.
+The initial pass completed on 2026-10-28; results and findings are in
+[step4.md](step4.md). Use this checklist for a repeat pass. Do not flash firmware.
+Complete the checklist, collect evidence and restore the device before changing
+the implementation in response to findings.
 
 ## Prerequisites and connections
 
@@ -56,7 +56,7 @@ Authorize on the laptop if needed. Register exactly
 an extra slash matches. Set `SPOTIFY_CLIENT_ID` or use `--client-id ID`:
 
 ```sh
-soloify --data data login --client-id ID
+python -m soloify.cli --data data login --client-id ID
 stat -c '%a' data/oauth.json
 ```
 
@@ -72,7 +72,7 @@ Stop competing laptop bridge/Soloist/container services before starting the test
 bridge; stop services using their normal service manager. Start one bridge:
 
 ```sh
-soloify --data data serve --listen 0.0.0.0 --port 7443 > "$EVIDENCE/bridge.log" 2>&1 &
+python -m soloify.cli --data data serve --listen 0.0.0.0 --port 7443 > "$EVIDENCE/bridge.log" 2>&1 &
 export BRIDGE_PID=$!
 ss -ltn 'sport = :7443'
 ```
@@ -86,12 +86,12 @@ the phone's Spotify app if Soloist is logged in but inactive. A service started 
 Check M1 → bridge before installing anything:
 
 ```sh
-python "$Q2REMOTE" sh "nc -w 3 '$BRIDGE_LAN' 7443 </dev/null; echo rc=\$?"
+python "$Q2REMOTE" sh --timeout 5 "telnet '$BRIDGE_LAN' 7443 </dev/null"
 ```
 
-Expected TCP connection/exit 0 (the bridge closes a connection without TLS/hello).
-If the installed BusyBox lacks that `nc` option, use its help to choose the timeout
-syntax; a successful relay TLS/hello after installation is the definitive check.
+Expected: telnet reports a connection, then exits at EOF because
+telnet does not speak TLS. The installed M1 has neither `nc` nor the shell's `timeout`; use telnet and q2remote's host-side deadline. If that deadline expires, q2remote identifies the remote process group to stop.
+A successful relay TLS/hello after installation is the definitive check.
 A TCP success alone does not verify the certificate pin or token.
 
 ## Safe preparation and verified relay
@@ -108,12 +108,12 @@ Build the MIPS relay, never the host binary for installation:
 python relay/build.py --rootfs ../q2-pod/build-m1/stock.squashfs
 sha256sum build/relay/q2-soloify > "$EVIDENCE/relay.sha256"
 umask 077
-soloify --data data remote --lan "$BRIDGE_LAN" > "$EVIDENCE/remote"
+python -m soloify.cli --data data remote --lan "$BRIDGE_LAN" > "$EVIDENCE/remote"
 ```
 
 The build prints its checksum. Record it in the result sheet. The laptop-verified MIPS relay checksum is recorded in [step4.md](step4.md); a changed source revision requires fresh laptop verification. `remote` must name
 the laptop's home-network address, not 127.0.0.1. Bridge and relay must both include
-step 4 (`q`/`r` frames and correlated transactions).
+step 4 follow-up (`q`/`r`, `B` reset-begin, `g` generation/warmup and `e` final-sample frames).
 
 The installed older hub used **Q2 Pod → Spotify** in step 3. For this firmware,
 temporarily use `/mnt/mmc/.spotify`: replace `librespot` with the verified relay,
@@ -197,7 +197,7 @@ them. Unsupported download/sign-out entries may remain visible on older UI.
 | F09 | In an existing accessible playlist with duplicate entries, select the later copy. Verify context offset identifies that copy by its following neighbor. URI alone cannot prove which duplicate was selected. No suitable fixture: deferred, with reason. |
 | F10 | Play Liked Songs. This laptop/account accepted native context playback. If rejected on this app/account, expect the URI-list fallback message: continuation stops at the end of the fetched playable page (at most 50). |
 | F11 | Now Playing title/artist/album, complete artwork and advancing position agree with the selected track. Capture a screenshot and state; initial position settles as output begins. |
-| F12 | Pause/resume from UI and hardware. Pause stops/reaps the sink and releases ALSA; resume has no old-track tail. Verify phone controls too. |
+| F12 | Pause/resume from UI and hardware. Pause drains queued audio and the source fade, then reaps the sink/releases ALSA before reporting paused. Expect the buffer delay plus an output tail; resume starts fresh without a delayed blip. Verify phone controls too. |
 | F13 | Next/previous and UI seek/scrub change to the right track/position, without pre-reset audio. Installed centre gesture toggled screen in step 3: defer UI scrub if still absent. A direct `S60000` control is separate diagnostic evidence. |
 | F14 | Enqueue one track; Queue shows upcoming tracks in order. Select a queue position, verify it starts and earlier entries were skipped. |
 | F15 | Open Queue, change it from the phone, then choose a now-stale row. Expect `unavailable`, refresh instruction and no unintended skip. Reopen Queue and choose the current row successfully. |
@@ -253,6 +253,8 @@ the event without probing it repeatedly.
 | TCP works, TLS/hello fails | Wrong certificate pin/token/data directory. Generate `remote` from the running bridge's data directory and transfer it securely. Without a pin, CA/name/clock validation applies. |
 | Account says run login | OAuth absent/expired/refused or service using a different data directory. Run PKCE on the server; don't re-pair Soloist as a substitute. Redirect mismatch means the dashboard URI differs. |
 | Pair/choose Q2 message; state none | Soloist not logged in, its WebSocket disconnected, or another Connect device active. Check paired session and choose/activate Q2 on phone. Never select a Web API device by name alone. |
+| First Soloist login fails just after bridge startup | Check the bridge log for the Soloist WebSocket and a ready session. The initial M1 pass needed one orderly bridge restart before login succeeded. Stop that bridge and its Soloist before restarting with the same data directory; do not run two paired copies or erase credentials. Web API OAuth is separate. |
+| `soloify` command missing in `nix develop` | The shell supplies dependencies and `PYTHONPATH`, not an installed console script. Use `python -m soloify.cli` from this checkout (or set `PYTHONPATH=bridge` outside the shell). |
 | Artist only shows albums | Expected development-mode restriction on top tracks. Artist-album and search API requests use limit 10. Old UI may not paginate artists. |
 | Playlist unavailable | Spotify restricts editorial/non-owned contents, or playlist is gone. An accessible owned playlist distinguishes this from a network failure. |
 | Browse offline/timeout, audio still works | Web API connectivity, expired authorization, local WebSocket timeout, or slow upstream. Transactions are bounded; Retry is explicit and playback actions are not replayed. |

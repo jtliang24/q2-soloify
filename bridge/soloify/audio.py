@@ -6,7 +6,10 @@ import logging
 import os
 import signal
 import struct
+import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 
 from . import wire
 from .player import Player
@@ -18,6 +21,7 @@ FRAME_MS = 20
 # The relay sends an ack at least every 5 s (docs/wire.md); silence this long means it's gone
 IDLE_TIMEOUT = 20
 MIN_INFLIGHT_MS = 300
+CAPTURE_READY_TIMEOUT = 3
 # A 100 ms 1 kHz beep each second, in real time: latency and stall tests without Soloist
 TEST_SOURCE = [
     *("-re", "-readrate_initial_burst", "0", "-f", "lavfi", "-i"),
@@ -31,10 +35,11 @@ def ffmpeg_args(source: str, bitrate: int, sink: str = SINK) -> list[str]:
     if source == "test":
         inp = TEST_SOURCE
     else:
-        inp = ["-f", "pulse", "-fragment_size", "3528", "-i", f"{sink}.monitor"]
+        inp = ["-copyts", "-f", "pulse", "-fragment_size", "3528", "-i", f"{sink}.monitor"]
     return [
         *inp,
-        *("-af", "asetpts=N/SR/TB", "-ac", "2", "-ar", "48000"),
+        # Retain the first capture timestamp, then use a sample clock without Pulse jitter.
+        *("-af", "asetpts=N/SR/TB+STARTPTS", "-ac", "2", "-ar", "48000"),
         *("-c:a", "libopus", "-b:a", f"{bitrate}k", "-application", "audio"),
         *("-frame_duration", str(FRAME_MS), "-page_duration", str(FRAME_MS * 1000)),
         *("-flush_packets", "1", "-f", "ogg", "pipe:1"),
@@ -49,12 +54,14 @@ class OggPackets:
     def __init__(self):
         self.buf = b""
         self.partial = b""
+        self.start_granule = None
+        self.final_granule = None
 
     def feed(self, data: bytes) -> list[bytes]:
         self.buf += data
         out = []
         while len(self.buf) >= self._PAGE.size:
-            magic, _, _, _, _, _, _, nsegs = self._PAGE.unpack_from(self.buf)
+            magic, _, flags, granule, _, _, _, nsegs = self._PAGE.unpack_from(self.buf)
             if magic != b"OggS":
                 raise ValueError("lost Ogg sync")
             head = self._PAGE.size + nsegs
@@ -63,15 +70,28 @@ class OggPackets:
             lacing = self.buf[self._PAGE.size : head]
             if len(self.buf) < head + sum(lacing):
                 break
+            if flags & 4:
+                self.final_granule = granule
             pos = head
+            audio_packets = 0
             for n in lacing:
                 self.partial += self.buf[pos : pos + n]
                 pos += n
                 if n < 255:
                     out.append(self.partial)
+                    if not self.partial.startswith((b"OpusHead", b"OpusTags")):
+                        audio_packets += 1
                     self.partial = b""
+            if self.start_granule is None and audio_packets and not flags & 4:
+                self.start_granule = granule - audio_packets * 960
             self.buf = self.buf[pos:]
         return out
+
+
+@dataclass(frozen=True)
+class OpusTail:
+    data: bytes
+    samples: int
 
 
 class Encoder:
@@ -80,6 +100,8 @@ class Encoder:
     def __init__(self, args: list[str]):
         self.args = args
         self.proc: asyncio.subprocess.Process | None = None
+        self.capture_at = None
+        self.present_at = None
 
     async def start(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
@@ -91,13 +113,26 @@ class Encoder:
             env=env,
         )
 
-    async def packets(self) -> AsyncIterator[bytes]:
+    async def packets(self) -> AsyncIterator[bytes | OpusTail]:
         """Its Opus packets, without the OpusHead and OpusTags headers."""
         ogg = OggPackets()
+        pending, samples = None, 0
         while chunk := await self.proc.stdout.read(65536):
             for packet in ogg.feed(chunk):
+                if "-copyts" in self.args and ogg.start_granule is not None:
+                    self.capture_at = ogg.start_granule / 48000
                 if not packet.startswith((b"OpusHead", b"OpusTags")):
-                    yield packet
+                    if pending is not None:
+                        yield pending
+                    pending = packet
+                    samples += 960
+        if pending is not None:
+            valid = (
+                960
+                if ogg.final_granule is None
+                else ogg.final_granule - (ogg.start_granule or 0) - (samples - 960)
+            )
+            yield OpusTail(pending, max(0, min(960, valid)))
         await self.proc.wait()
 
     async def stop(self) -> None:
@@ -108,6 +143,7 @@ class Encoder:
                 await asyncio.wait_for(self.proc.wait(), 3)
             except TimeoutError:
                 self.proc.kill()
+                await self.proc.wait()
 
 
 class Session:
@@ -132,6 +168,17 @@ class Session:
         self.sent = self.acked = 0
         self.tasks: set[asyncio.Task] = set()
         self.lock = asyncio.Lock()
+        self.generation = 0
+        self.reset_controls = 0
+        self.stall_generation = None
+        self.unacked = deque()
+        self.ack_progress = asyncio.Event()
+        self.capture_stopping = asyncio.Event()
+        self.capture_ready = asyncio.Event()
+        self.capture_release = asyncio.Event()
+        self.last_ack = 0.0
+        self.capture_blocked = False
+        self.pause_completed_generation = -1
 
     @property
     def streaming(self) -> bool:
@@ -142,6 +189,7 @@ class Session:
 
     async def run(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.writer = writer
+        self.player.capture_changed = self.playback_changed
         self.player.attach(writer)
         try:
             while True:
@@ -157,16 +205,28 @@ class Session:
                         if len(self.control_tasks) >= 32:
                             raise wire.WireError("too many audio requests")
                         task = asyncio.create_task(
-                            self.halt(payload[2:].decode(errors="replace") or "stop")
+                            self.halt(
+                                payload[2:].decode(errors="replace") or "stop", self.generation
+                            )
                         )
                         self.control_tasks.add(task)
                         task.add_done_callback(self.control_tasks.discard)
                 elif kind == wire.ACK:
-                    self.acked = wire.ack_count(payload)
+                    count = wire.ack_count(payload)
+                    if not self.acked <= count <= self.sent:
+                        raise wire.WireError("invalid audio ack")
+                    if count > self.acked:
+                        self.acked = count
+                        self.last_ack = asyncio.get_running_loop().time()
+                        while self.unacked and self.unacked[0][0] < count:
+                            self.unacked.popleft()
+                        self.ack_progress.set()
                 elif kind == wire.CONTROL:
                     if len(self.control_tasks) >= 32:
                         raise wire.WireError("too many controls")
-                    task = asyncio.create_task(self.control(payload))
+                    if payload[:1] in (b"n", b"b", b"S"):
+                        self.reset_controls += 1
+                    task = asyncio.create_task(self.control(payload, queued=True))
                     self.control_tasks.add(task)
                     task.add_done_callback(self.control_tasks.discard)
                 elif kind == wire.BROWSE_REQUEST:
@@ -184,6 +244,10 @@ class Session:
                         self.inflight_ms(),
                     )
         finally:
+            # Disable event-driven work before awaiting cancelled controls: shutdown can
+            # itself receive state events, which must not create another capture task.
+            if self.player.capture_changed == self.playback_changed:
+                self.player.capture_changed = None
             for task in self.pending_browse | self.control_tasks | self.tasks:
                 task.cancel()
             await asyncio.gather(
@@ -198,58 +262,83 @@ class Session:
     async def browse(self, payload):
         from .browse import parse, response
 
-        # The relay resets as soon as it forwards these op names. Even a bad argument list
-        # must finish that boundary, or the relay would discard audio indefinitely.
-        fields = payload[4:].split(b"\t")
-        reset = len(fields) > 1 and fields[1].rstrip(b"\n") in (b"play", b"skip")
-        bounded = False
+        async def boundary(prepare, reset):
+            return await self.browse_boundary(prepare, reset, payload[:4])
 
-        def finished():
-            nonlocal bounded
-            bounded = True
-
-        async def boundary(action, needs_reset):
-            return await self.browse_boundary(action, needs_reset, finished)
-
-        try:
-            if self.browser:
-                reply = await self.browser.handle(payload[4:], boundary)
-            else:
-                try:
-                    id, _, _ = parse(payload[4:])
-                    reply = response(id, "unsupported", "Browsing is not configured on this server")
-                except (ValueError, UnicodeError):
-                    reply = response("0", "bad", "Malformed request")
-        finally:
-            if reset and not bounded:
-                # Validation failed, or the deadline expired before obtaining the control lock.
-                # No playback action ran. Release this relay reset without queueing another action.
-                self.writer.write(wire.frame(wire.BOUNDARY, b"Q"))
-                self.player.sent = None
-                self.player.flush()
+        if self.browser:
+            reply = await self.browser.handle(payload[4:], boundary)
+        else:
+            try:
+                id, _, _ = parse(payload[4:])
+                reply = response(id, "unsupported", "Browsing is not configured on this server")
+            except (ValueError, UnicodeError):
+                reply = response("0", "bad", "Malformed request")
         self.writer.write(wire.frame(wire.BROWSE_RESPONSE, payload[:4] + reply))
 
-    async def browse_boundary(self, action, reset=True, finished=None):
+    async def browse_boundary(self, prepare, reset=True, correlation=b"\0\0\0\0"):
         async with self.lock:
+            action = await prepare()  # read-only: neither capture nor sink is disturbed
             self.player.deferred = True
             try:
                 if reset:
+                    log.info(
+                        "reset begin browse=%d gen=%d", int.from_bytes(correlation), self.generation
+                    )
+                    self.writer.write(wire.frame(wire.RESET_BEGIN, correlation))
                     await self._halt("control")
                 result = await action()
                 if reset:
+                    self.player.explicit_paused = False
                     self.player._stalled(False)
+                await asyncio.sleep(self.player.SETTLE)
                 return result
             finally:
-                # Also release the reset on failure or cancellation; no action is replayed.
-                await asyncio.sleep(self.player.SETTLE)
+                # Once begun, even cancellation must drain old capture and finish the reset.
                 if reset:
                     self.writer.write(wire.frame(wire.BOUNDARY, b"Q"))
-                    if finished:
-                        finished()
+                    log.info(
+                        "reset end browse=%d gen=%d", int.from_bytes(correlation), self.generation
+                    )
                 self.player.sent = None
                 self.player._send_cover()
                 self.player.deferred = False
                 self.player.flush()
+
+    def playback_changed(self, playing):
+        """External state transitions join the same ordered lock as local controls/capture."""
+        generation = self.generation
+        # A resume probe must not overtake a queued external pause.
+        if not playing:
+            self.capture_blocked = True
+        task = asyncio.create_task(self._playback_changed(playing, generation))
+        self.control_tasks.add(task)
+        task.add_done_callback(self.control_tasks.discard)
+
+    async def _playback_changed(self, playing, generation):
+        async with self.lock:
+            if not playing:
+                if generation != self.generation or generation == self.pause_completed_generation:
+                    return
+                await asyncio.sleep(self.player.PAUSE_SETTLE)
+                await self._halt("pause", generation)
+                self.writer.write(wire.frame(wire.BOUNDARY, b"s"))
+                self.pause_completed_generation = generation
+            else:
+                self.capture_blocked = False
+                if (
+                    self.audio_request is not None
+                    and self.player.state.playing
+                    and not self.streaming
+                    and not self.reset_controls
+                ):
+                    # The phone already issued Play. Capture now rather than waiting up to
+                    # a second for the relay probe, which would lose that second at the join.
+                    self.player.sent = None
+                    self.player.flush()
+                    if self.player.paused_by_us:
+                        await self._want()
+                    else:
+                        await self._start_capture()
 
     def target(self, payload: bytes) -> None:
         """`A 1 MS` carries the relay's buffer target, which is also the in-flight limit: a stall
@@ -264,69 +353,236 @@ class Session:
             await self._want()
 
     async def _want(self) -> None:
-        if self.streaming or self.halting:
+        if self.streaming or self.halting or self.reset_controls or self.capture_blocked:
             return
         if self.inflight_ms() > self.limit // 2:
             return  # what's in flight from before a stall hasn't drained yet
+        if self.player.explicit_paused:
+            return
         if self.player.ws and not self.player.state.playing and not self.player.paused_by_us:
             return
-        await self.player.resume()
+        recovering = self.player.paused_by_us
+        try:
+            await self._start_capture(recovering)
+            if recovering:
+                self.encoder.present_at = time.time()
+                await self.player.resume()
+                if self.player.paused_by_us:
+                    await self._halt("pause")
+        except TimeoutError:
+            log.info("capture readiness deadline gen=%d", self.generation)
+            await self._halt("pause")
+        finally:
+            self.capture_release.set()
+
+    async def _start_capture(self, priming=False):
+        self.generation += 1
+        self.capture_stopping = asyncio.Event()
+        self.capture_ready = asyncio.Event()
+        self.capture_release = asyncio.Event()
         self.encoder = self.encoder_factory()
         await self.encoder.start()
-        log.info("audio on (inflight %d ms)", self.inflight_ms())
-        self.pump = asyncio.create_task(self._pump(self.encoder))
+        log.info("audio on gen=%d inflight=%d", self.generation, self.inflight_ms())
+        self.pump = asyncio.create_task(self._pump(self.encoder, self.generation, priming))
+        if priming:
+            await asyncio.wait_for(self.capture_ready.wait(), CAPTURE_READY_TIMEOUT)
+            log.info(
+                "capture ready gen=%d word=%s position=%d",
+                self.generation,
+                self.player.state.word,
+                self.player.state.position(),
+            )
 
-    async def halt(self, reason: str) -> None:
+    async def halt(self, reason: str, generation=None) -> None:
         async with self.lock:
-            await self._halt(reason)
+            await self._halt(reason, generation)
 
-    async def _halt(self, reason: str) -> None:
-        if not self.streaming:
+    async def _halt(self, reason: str, generation=None) -> None:
+        if not self.streaming or (generation is not None and generation != self.generation):
             return
         encoder, self.encoder = self.encoder, None
-        log.info("audio off: %s (inflight %d ms)", reason, self.inflight_ms())
-        self.halting = asyncio.current_task()
+        pump = self.pump
+        self.capture_stopping.set()
+        self.capture_release.set()
+        self.ack_progress.set()
+        log.info(
+            "audio off gen=%d reason=%s inflight=%d ack_age=%.3f oldest_age=%.3f",
+            self.generation,
+            reason,
+            self.inflight_ms(),
+            asyncio.get_running_loop().time() - self.last_ack if self.last_ack else -1,
+            asyncio.get_running_loop().time() - self.unacked[0][1] if self.unacked else 0,
+        )
+
+        async def finish():
+            try:
+                async with asyncio.timeout(4):
+                    if reason not in ("pause", "control"):
+                        await self.player.pause()
+                    await encoder.stop()
+                    if pump:
+                        await pump
+            except TimeoutError:
+                log.info("capture shutdown deadline gen=%d", self.generation)
+                if getattr(encoder, "proc", None) and encoder.proc.returncode is None:
+                    encoder.proc.kill()
+                    await encoder.proc.wait()
+                if pump:
+                    pump.cancel()
+                    await asyncio.gather(pump, return_exceptions=True)
+
+        self.halting = asyncio.create_task(finish())
+        cancelled = False
         try:
-            if reason not in ("pause", "control"):
-                await self.player.pause()
-            await encoder.stop()
-            if self.pump and self.pump is not asyncio.current_task():
-                await self.pump
+            while not self.halting.done():
+                try:
+                    await asyncio.shield(self.halting)
+                except asyncio.CancelledError:
+                    cancelled = True
+            self.halting.result()
+            if cancelled:
+                raise asyncio.CancelledError
         finally:
             self.halting = None
 
-    async def control(self, payload: bytes) -> None:
-        """Explicit user pauses never become stall pauses. Seek/skip drains the old encoder
-        before its ordered boundary; a relay discards those packets until it sees that marker."""
+    async def control(self, payload: bytes, queued=False) -> None:
+        """Old capture drains before its boundary. Prime capture BEFORE the final mutation:
+        Soloist can auto-play on skip even when paused, so starting afterward loses the intro."""
         async with self.lock:
             self.player.deferred = True
+            primed = False
             try:
                 reset = payload[:1] in (b"n", b"b", b"S")
+                taking_audio = self.streaming or self.audio_request is not None
+                if payload[:1] == b"P" and taking_audio and not self.streaming:
+                    self.capture_blocked = False
+                    await self._start_capture(priming=True)
+                    primed = True
                 if reset:
+                    if taking_audio:
+                        await self.player.pause()
                     await self._halt("control")
+                    if taking_audio and self.reset_controls <= 1:
+                        await self._start_capture(priming=True)
+                        primed = True
+                if primed:
+                    self.encoder.present_at = time.time()
                 await self.player.control(payload)
                 if payload[:1] == b"s":
+                    # Capture the source's pause fade, then let the relay drain it in order.
                     await asyncio.sleep(self.player.PAUSE_SETTLE)
                     await self._halt("pause")
-                # Soloist sends the new state around its command response. Settle the burst
-                # before the snapshot, even when the command didn't change the state.
+                if primed:
+                    if self.player.state.word == "playing":
+                        self.player._stalled(False)  # Soloist auto-played; capture already has it
+                    else:
+                        await self.player.resume()
                 await asyncio.sleep(self.player.SETTLE)
+            except TimeoutError:
+                log.info("control capture deadline gen=%d", self.generation)
+                await self._halt("pause")  # no mutation was dispatched; never replay it
+            finally:
+                if payload[:1] == b"s":
+                    self.pause_completed_generation = self.generation
                 self.writer.write(wire.frame(wire.BOUNDARY, payload))
                 self.player.sent = None
                 self.player._send_cover()
-            finally:
                 self.player.deferred = False
-            self.player.flush()
+                if queued and payload[:1] in (b"n", b"b", b"S"):
+                    self.reset_controls -= 1
+                self.player.flush()
+                self.capture_release.set()  # new audio follows the final boundary and state
 
-    async def _pump(self, encoder: Encoder) -> None:
-        # Never awaits the writer: a blocked link must not back up into ffmpeg and PulseAudio,
-        # where it would play later as a backlog. The in-flight limit bounds what's buffered.
+    async def _capacity(self, generation):
+        """Yield bursts to the ACK reader, bounded by the oldest packet's target deadline."""
+        loop = asyncio.get_running_loop()
+        while self.inflight_ms() >= self.limit and self.unacked:
+            if generation != self.generation or self.capture_stopping.is_set():
+                return True  # shutdown drains a bounded tail, without waiting for the network
+            remaining = self.unacked[0][1] + self.limit / 1000 - loop.time()
+            if remaining <= 0:
+                return False
+            self.ack_progress.clear()
+            try:
+                await asyncio.wait_for(self.ack_progress.wait(), remaining)
+            except TimeoutError:
+                return False
+        return True
+
+    async def _pump(self, encoder: Encoder, generation: int, priming=False) -> None:
+        loop = asyncio.get_running_loop()
+        burst, burst_at, tail = 0, loop.time(), 0
+        announced, last_burst_log = False, 0.0
+        primer = b""
+        skip, discard = 312, 0
         async for packet in encoder.packets():
-            if self.writer.is_closing():
+            end_samples = packet.samples if isinstance(packet, OpusTail) else None
+            if isinstance(packet, OpusTail):
+                packet = packet.data
+            if not self.capture_ready.is_set():
+                self.capture_ready.set()
+                if priming:
+                    await self.capture_release.wait()
+                    start = getattr(encoder, "capture_at", None)
+                    present = getattr(encoder, "present_at", None)
+                    skip = (
+                        312 + max(0, round((present - start) * 48000))
+                        if (start is not None and present is not None)
+                        else 1272
+                    )
+                    # Keep at least 80 ms of decoder history even for slow priming. Earlier
+                    # paused samples are omitted, bounding pre-skip and the warmup queue.
+                    discard = max(0, (skip - 4800) // 960)
+                    skip -= discard * 960
+                    log.info("capture prefix gen=%d skip=%d", generation, skip)
+                    if discard:
+                        discard -= 1
+                        continue
+                    elif skip >= 960:
+                        primer = packet
+                        continue
+            if discard:
+                discard -= 1
                 continue
+            now = loop.time()
+            if now - burst_at > 0.005:
+                if burst >= 10 and now - last_burst_log >= 1:
+                    log.info(
+                        "capture burst gen=%d packets=%d inflight=%d oldest=%.3f",
+                        generation,
+                        burst,
+                        self.inflight_ms(),
+                        now - self.unacked[0][1] if self.unacked else 0,
+                    )
+                    last_burst_log = now
+                burst, burst_at = 0, now
+            burst += 1
+            if self.writer.is_closing() or generation != self.generation:
+                continue
+            if not await self._capacity(generation):
+                if self.stall_generation != generation:
+                    self.stall_generation = generation
+                    task = asyncio.create_task(self.halt("stall", generation))
+                    self.tasks.add(task)
+                    task.add_done_callback(self.tasks.discard)
+                # Let shutdown acquire the lock and pause Soloist, then drain only a short tail.
+                await asyncio.sleep(0)
+            if self.encoder is not encoder or self.stall_generation == generation:
+                tail += 1
+                if tail > 15:  # at most 300 ms beyond the in-flight limit
+                    continue
+            if not announced:
+                self.writer.write(
+                    wire.frame(
+                        wire.CAPTURE,
+                        struct.pack(">IH", generation, skip) + primer,
+                    )
+                )
+                announced = True
+            if end_samples is not None:
+                self.writer.write(
+                    wire.frame(wire.AUDIO_END, struct.pack(">IH", self.sent, end_samples))
+                )
             self.writer.write(wire.audio(self.sent, packet))
+            self.unacked.append((self.sent, loop.time()))
             self.sent += 1
-            if self.encoder is encoder and self.inflight_ms() > self.limit:
-                task = asyncio.create_task(self.halt("stall"))
-                self.tasks.add(task)
-                task.add_done_callback(self.tasks.discard)

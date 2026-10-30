@@ -3,7 +3,6 @@
 #include "relay.h"
 
 #define SERIAL 0x51324f53u
-#define PRE_SKIP 312 /* libopus's encoder delay at 48 kHz */
 
 static uint32_t crc_table[256];
 
@@ -37,9 +36,9 @@ void ogg_init(void) {
     }
 }
 
-int ogg_headers(struct ogg *o, unsigned char *out) {
+int ogg_headers(struct ogg *o, unsigned char *out, unsigned skip) {
     static const char vendor[] = "q2-soloify";
-    unsigned char head[19] = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, PRE_SKIP & 0xff, PRE_SKIP >> 8,
+    unsigned char head[19] = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, skip & 0xff, skip >> 8,
                               0x80, 0xbb, 0, 0, 0, 0, 0};
     unsigned char tags[8 + 4 + sizeof vendor - 1 + 4] = {'O', 'p', 'u', 's', 'T', 'a', 'g', 's', sizeof vendor - 1};
     int n;
@@ -49,7 +48,7 @@ int ogg_headers(struct ogg *o, unsigned char *out) {
     return n + page(out + n, 0, 0, o->seq++, tags, sizeof tags);
 }
 
-int ogg_packet(struct ogg *o, unsigned char *out, const unsigned char *p, int n) {
-    o->granule += 48 * FRAME_MS;
-    return page(out, 0, o->granule, o->seq++, p, n);
+int ogg_packet(struct ogg *o, unsigned char *out, const unsigned char *p, int n, unsigned samples, int end) {
+    o->granule += samples;
+    return page(out, end ? 4 : 0, o->granule, o->seq++, p, n);
 }

@@ -5,6 +5,9 @@ Implemented on the laptop, 2026-10-28. The M1 pass ran the same evening followin
 firmware was flashed; card files were temporarily replaced and restored. Step 3's
 historical hardware results remain in [step3.md](step3.md).
 
+The later [reliability follow-up](step4-followup.md) records search teardown
+reproduction, playback fixes, software gates and repeat device validation.
+
 ## Implementation
 
 `soloify --data data login --client-id ID` (or `SPOTIFY_CLIENT_ID`) prints a PKCE

@@ -25,7 +25,7 @@ def relay_binary() -> Path:
 SINK_NOWHERE = {"SOLOIFY_DECODE": "cat", "SOLOIFY_SINK": "cat >/dev/null"}
 # The device's decoder line, with the host's ffmpeg
 DECODE = (
-    "ffmpeg -nostdin -loglevel error -probesize 32 -analyzeduration 0 -fflags nobuffer "
+    "ffmpeg -nostdin -loglevel error -probesize 32 -analyzeduration 0 "
     "-f ogg -i pipe:0 -ac 2 -ar 44100 -f s16le pipe:1"
 )
 # A sink that plays in real time, as aplay does

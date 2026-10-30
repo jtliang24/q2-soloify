@@ -171,8 +171,15 @@ static void session(const struct endpoint *ep, int target) {
         }
         while ((type = wire_next(&wire, &payload, &n)) > 0) {
             if (type == 'a' && n > 4) {
-                if (q2pod_audio()) audio_packet(payload + 4, n - 4);
+                if (q2pod_audio()) audio_packet(payload + 4, n - 4, be32(payload));
                 ++received; /* ack discarded audio too, so a reset never blocks flow control */
+            } else if (type == 'g' && (n == 4 || (n >= 6 && n <= 1281))) {
+                unsigned skip = n == 4 ? 312 : (unsigned)payload[4] << 8 | payload[5];
+                q2pod_capture();
+                audio_capture(be32(payload), skip, payload + (n == 4 ? 4 : 6), n == 4 ? 0 : n - 6);
+                say("capture gen=%u ready=%d", be32(payload), q2pod_ready());
+            } else if (type == 'e' && n == 6) {
+                audio_end(be32(payload), (unsigned)payload[4] << 8 | payload[5]);
             } else q2pod_frame(type, payload, n);
             wire_consume(&wire);
         }

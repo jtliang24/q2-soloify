@@ -2,6 +2,7 @@ import asyncio
 import ssl
 import struct
 
+from relay_rig import until
 from soloify import audio, server, wire
 from soloify.player import Player
 
@@ -114,6 +115,7 @@ async def test_stall_pauses_soloist_and_stops_the_encoder():
     await rig.packets(5)
     assert not rig.encoders[0].stopped
     await rig.packets(1)
+    await until(lambda: rig.encoders[0].stopped)
     assert rig.encoders[0].stopped
     assert rig.soloist.calls == [("pause",)]
     assert not rig.session.streaming
@@ -123,11 +125,13 @@ async def test_after_a_stall_audio_resumes_once_acks_drain():
     rig = Rig(limit=100)
     await rig.send(wire.AUDIO_REQUEST, b"1")
     await rig.packets(6)
+    await until(lambda: rig.encoders[0].stopped)
     await rig.send(wire.AUDIO_REQUEST, b"1")  # 120 ms in flight: still stalled
     assert len(rig.encoders) == 1
     await rig.send(wire.ACK, struct.pack(">I", 5))
     await rig.send(wire.AUDIO_REQUEST, b"1")
     assert len(rig.encoders) == 2
+    await rig.packets(1)  # prime replacement capture before resuming Soloist
     assert rig.soloist.calls == [("pause",), ("play",)]
 
 
@@ -142,6 +146,7 @@ async def test_relay_pause_and_resume():
     assert not rig.session.player.paused_by_us
     assert len(rig.encoders) == 1  # a delayed probe cannot undo the user's pause
     await rig.send(wire.CONTROL, b"P")
+    await rig.packets(1)  # resume waits for a primed capture before issuing Play
     await rig.send(wire.AUDIO_REQUEST, b"1")
     assert rig.soloist.calls == [("pause",), ("play",)]
 
@@ -199,12 +204,16 @@ async def _beep_stall_and_resume(identity, reader, writer):
             kind, payload = await asyncio.wait_for(wire.read_frame(reader), 1.5)
         except TimeoutError:
             break
+        if kind in (wire.CAPTURE, wire.AUDIO_END):
+            continue
         assert kind == wire.AUDIO
         seqs.append(struct.unpack(">I", payload[:4])[0])
     assert seqs == list(range(len(seqs)))
     assert 20 <= len(seqs) <= 60
     writer.write(wire.frame(wire.ACK, struct.pack(">I", len(seqs))))
     writer.write(wire.frame(wire.AUDIO_REQUEST, b"1"))
+    kind, payload = await asyncio.wait_for(wire.read_frame(reader), 3)
+    assert kind == wire.CAPTURE
     kind, payload = await asyncio.wait_for(wire.read_frame(reader), 3)
     assert (kind, payload[:4]) == (wire.AUDIO, struct.pack(">I", len(seqs)))
 
@@ -216,3 +225,26 @@ async def test_silent_relay_is_dropped(monkeypatch):
     await asyncio.wait([rig.task], timeout=5)
     assert isinstance(rig.task.exception(), TimeoutError)
     assert rig.encoders[0].stopped
+
+
+async def test_real_encoder_preserves_final_granule_trim():
+    args = audio.ffmpeg_args("test", 160)
+    encoder = audio.Encoder([*args[:-1], "-t", "0.1", args[-1]])
+    await encoder.start()
+    packets = [p async for p in encoder.packets()]
+    assert len(packets) == 6
+    assert all(isinstance(p, bytes) for p in packets[:-1])
+    assert isinstance(packets[-1], audio.OpusTail)
+    assert packets[-1].samples == 312  # 4800 input samples + 312 delay, not 5760 padded samples
+
+
+async def test_timestamped_encoder_keeps_capture_anchor_and_exact_tail():
+    args = audio.ffmpeg_args("test", 160)
+    args[args.index("-af") + 1] = "asetpts=N/SR/TB+1234/TB"
+    args[args.index("-i") : args.index("-i")] = ["-t", "0.1"]
+    encoder = audio.Encoder(["-copyts", *args])
+    await encoder.start()
+    packets = [p async for p in encoder.packets()]
+    assert abs(encoder.capture_at - 1234) < 1 / 48000
+    assert len(packets) == 6
+    assert packets[-1].samples == 312

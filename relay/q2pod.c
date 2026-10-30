@@ -10,7 +10,7 @@ static int enabled, control = -1, browser = -1, lockfd = -1, online, configured;
 static char base[96], current[TEXT] = "state=none\n", upstream[TEXT] = "state=none\n";
 static char prime[TEXT]; /* position of the first audio after connect or a reset */
 static uint64_t stamped;
-static int held, commands, resetting;
+static int held, commands, resetting, draining, pause_complete, fresh_wait;
 static struct { char text[TEXT]; uint64_t sample; } states[STATES];
 static unsigned first, count;
 static struct { char id[64]; unsigned char *data; int size; } covers[COVERS];
@@ -101,6 +101,18 @@ static uint64_t position(void) {
     if (is(current, "playing")) p += now_ms() - stamped;
     return duration && p > duration ? duration : p;
 }
+void q2pod_paused(void) {
+    if (!enabled || !draining) return;
+    draining = 0;
+    count = first = 0;
+    *prime = 0;
+    uint64_t pos = is(upstream, "paused") ? number(upstream, "position") : position();
+    publish(is(upstream, "paused") ? upstream : current, "paused", pos);
+    relay_send('A', "0 pause", 7);
+}
+void q2pod_capture(void) {
+    if (q2pod_ready()) fresh_wait = 0;
+}
 void q2pod_started(void) {
     if (enabled && *prime && !held && !resetting) {
         publish(prime, "playing", number(prime, "position"));
@@ -154,6 +166,7 @@ void q2pod_config(int valid) { configured = valid; }
 void q2pod_link(int up) {
     online = up;
     commands = resetting = 0;
+    if (!up && draining) audio_pause_end();
     if (!up) for (int i = 0; i < CLIENTS; ++i)
         if (clients[i].fd >= 0 && clients[i].waiting)
             local_reply(i, "offline", "Bridge disconnected; Retry to reconnect");
@@ -163,17 +176,23 @@ void q2pod_link(int up) {
     }
 }
 int q2pod_wants(void) { return !enabled || (!held && !resetting && is(upstream, "playing")); }
-int q2pod_audio(void) { return !enabled || !resetting; }
+int q2pod_audio(void) { return !enabled || (!resetting && !fresh_wait && (!held || draining)); }
+int q2pod_ready(void) { return !enabled || (!commands && q2pod_wants()); }
 static void command(char *buf, int n) {
     int reset = buf[0] == 'n' || buf[0] == 'b' || buf[0] == 'S';
     if (buf[0] == 'p') buf[0] = held || !is(current, "playing") ? 'P' : 's';
     if (buf[0] == 's') {
         held = 1;
-        publish(current, "paused", position());
+        pause_complete = 0;
+        draining = 1;
+        audio_pause();
     } else if (buf[0] == 'P') {
-        held = 0;
+        held = draining = pause_complete = 0;
+        fresh_wait = 1;
+        audio_clear();
         publish(current, "playing", position());
     } else if (reset) {
+        draining = pause_complete = 0;
         count = first = 0;
         *prime = 0;
         audio_clear();
@@ -182,7 +201,6 @@ static void command(char *buf, int n) {
         if (reset) ++resetting;
         else ++commands;
     }
-    if (buf[0] == 's') relay_send('A', "0 pause", 7);
 }
 void q2pod_frame(int type, const unsigned char *p, int n) {
     if (!enabled) return;
@@ -201,9 +219,23 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
             clients[i].waiting = 0;
             return;
         }
+    } else if (type == 'B' && n == 4) {
+        /* The bridge has finished read-only preparation. A client may already have
+         * timed out: the mutation still needs its boundary, independently of its slot. */
+        say("reset begin browse=%u", be32(p));
+        held = draining = pause_complete = fresh_wait = 0;
+        count = first = 0;
+        *prime = 0;
+        audio_clear();
+        ++resetting;
     } else if (type == 'x') {
+        say("boundary op=%c pending=%d commands=%d", n ? p[0] : '?', resetting, commands);
         if (n && (p[0] == 's' || p[0] == 'P')) {
             if (commands) --commands;
+            if (p[0] == 's') {
+                pause_complete = 1;
+                if (draining) audio_pause_end();
+            }
         } else {
             if (resetting) --resetting;
             count = first = 0;
@@ -221,23 +253,33 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
         if (commands && ((!strcmp(word, "playing")) == held)) return;
         if (strcmp(word, "playing")) {
             if (commands) return;
-            relay_send('A', "0 pause", 7);
             if (!strcmp(word, "paused")) {
                 char before[64], after[64];
                 value(current, "track", before, sizeof before);
                 value(text, "track", after, sizeof after);
                 held = 1;
-                if (is(current, "playing")) publish(current, "paused", position());
+                if (is(current, "playing")) {
+                    draining = 1;
+                    audio_pause();
+                    if (pause_complete) audio_pause_end();
+                }
                 else if (!count && (!is(current, "paused") || (!audio_received() && strcmp(before, after))))
                     publish(text, word, number(text, "position"));
             } else {
-                held = 0;
+                held = draining = pause_complete = fresh_wait = 0;
+                relay_send('A', "0 pause", 7);
                 count = first = 0;
                 *prime = 0;
                 audio_clear();
                 publish(text, word, number(text, "position"));
             }
         } else {
+            if (!commands && (draining || is(current, "paused"))) {
+                draining = 0;
+                fresh_wait = 1;
+                audio_clear();
+            }
+            pause_complete = 0;
             if (!commands) held = 0;
             if (count == STATES) first = (first + 1) % STATES, --count;
             unsigned at = (first + count++) % STATES;
@@ -299,22 +341,11 @@ static void reply(int i) {
     else if (!online) local_reply(i, "offline", "Can't reach the Spotify bridge");
     else {
         unsigned char payload[8196];
-        int reset = (end-start == 4 && !memcmp(buf+start, "play", 4)) ||
-                    (end-start == 4 && !memcmp(buf+start, "skip", 4));
         clients[i].correlation = ++next_request;
         put_be32(payload, clients[i].correlation);
         memcpy(payload + 4, buf, n);
         if (relay_send('q', payload, n+4)) local_reply(i, "offline", "Bridge disconnected");
-        else {
-            clients[i].waiting = 1;
-            if (reset) {
-                held = 0;
-                count = first = 0;
-                *prime = 0;
-                audio_clear();
-                ++resetting;
-            }
-        }
+        else clients[i].waiting = 1;
     }
     return;
 bad:
@@ -376,7 +407,7 @@ void q2pod_tick(void) {
         }
         if (valid && n < 63) command(buf, n);
     }
-    while (count && !held && !resetting && audio_played() >= states[first].sample) {
+    while (count && (!held || draining) && !resetting && audio_played() >= states[first].sample) {
         char *text = states[first].text;
         uint64_t pos = number(text, "position");
         if (*prime) pos = pos > (unsigned)audio_target() ? pos - audio_target() : 0;

@@ -27,6 +27,7 @@ class Peer:
         self.frames = []
         self.server = server.Server(self.identity, self.session)
         self.listener = None
+        self.capture_announced = False
 
     async def session(self, reader, writer):
         self.writer = writer
@@ -49,6 +50,9 @@ class Peer:
                 await asyncio.sleep(0)
 
     async def packets(self, n):
+        if not self.capture_announced:
+            await self.send(wire.CAPTURE, (1).to_bytes(4, "big"))
+            self.capture_announced = True
         for i in range(n):
             await self.send(wire.AUDIO, i.to_bytes(4, "big") + b"\xfc\xff\xfe")
 
@@ -57,7 +61,7 @@ class Peer:
 
 
 @pytest.fixture
-async def contract(tmp_path):
+async def contract(tmp_path, request):
     # Unix socket names must fit 108 bytes; pytest's descriptive directories often don't.
     with tempfile.TemporaryDirectory(prefix="sf-") as folder:
         base = Path(folder) / "q"
@@ -65,7 +69,11 @@ async def contract(tmp_path):
         peer.listener = await peer.server.start("127.0.0.1", 0)
         port = peer.listener.sockets[0].getsockname()[1]
         line = f"127.0.0.1 {port} {peer.identity.token} sha256={peer.identity.pin}"
-        relay = Relay(tmp_path, [line], "-q", "-b", "200", env={"SOLOIFY_Q2POD": str(base)})
+        env = {"SOLOIFY_Q2POD": str(base)}
+        if getattr(request, "param", None) == "record":
+            env["SOLOIFY_DECODE"] = f"cat >> {tmp_path / 'paused.ogg'}"
+            env["SOLOIFY_SINK"] = "cat >/dev/null"  # closes on drain EOF even without PCM
+        relay = Relay(tmp_path, [line], "-q", "-b", "200", env=env)
         await relay.start()
         try:
             await until(lambda: peer.writer is not None)
@@ -164,26 +172,35 @@ async def test_metadata_waits_with_audio(contract):
     assert Path(f"{base}.state.jpg").read_bytes() == b"\xff\xd8bbb\xff\xd9"
 
 
-async def test_pause_reaps_sink_before_state_and_keeps_ring(contract):
+async def test_pause_drains_sink_before_state_and_resume_requires_fresh_capture(contract):
     relay, peer, base = contract
     await peer.packets(40)
     await until(lambda: len(children(relay.proc.pid)) == 2)
     pids = children(relay.proc.pid)
     controls(base, b"s")
-    await until(lambda: "state=paused\n" in read_state(base))
-    assert all(not Path(f"/proc/{pid}").exists() for pid in pids)
     await until(lambda: peer.controls() == [b"s"])
-    assert (wire.AUDIO_REQUEST, b"0 pause") in peer.frames
-    frozen = read_state(base)
-    await asyncio.sleep(0.1)
+    assert "state=playing\n" in read_state(base)
+    assert children(relay.proc.pid) == pids
     await peer.send(wire.BOUNDARY, b"s")
     await peer.send(wire.STATE, state(word="paused", position=9000))
+    await until(lambda: "state=paused\n" in read_state(base))
+    assert all(not Path(f"/proc/{pid}").exists() for pid in pids)
+    await until(lambda: (wire.AUDIO_REQUEST, b"0 pause") in peer.frames)
+    frozen = read_state(base)
     await asyncio.sleep(0.1)
-    # The local position is behind Soloist's and remains frozen, including at=.
+    await peer.send(wire.STATE, state(word="paused", position=9000))
+    await asyncio.sleep(0.1)
+    # The paused position remains frozen, including at=.
     assert read_state(base) == frozen
     controls(base, b"P")
-    await until(lambda: len(children(relay.proc.pid)) == 2)  # buffered audio, no new packets
     await until(lambda: peer.controls() == [b"s", b"P"])
+    await peer.send(wire.BOUNDARY, b"P")
+    await peer.send(wire.STATE, state())
+    await asyncio.sleep(0.3)  # startup may be slow: no old packets may restart the sink
+    assert children(relay.proc.pid) == []
+    await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
+    await peer.packets(12)  # fresh refill includes Opus pre-skip
+    await until(lambda: len(children(relay.proc.pid)) == 2)
 
 
 async def test_rapid_toggles_ignore_stale_state(contract):
@@ -197,10 +214,92 @@ async def test_rapid_toggles_ignore_stale_state(contract):
     await peer.send(wire.STATE, state())
     await asyncio.sleep(0.1)
     assert "state=paused\n" in read_state(base)
+
     await peer.send(wire.BOUNDARY, b"s")
     await peer.send(wire.STATE, state(word="paused"))
     await asyncio.sleep(0.1)
     assert "state=paused\n" in read_state(base)
+
+
+@pytest.mark.parametrize("contract", ["record"], indirect=True)
+async def test_pause_drains_every_packet_and_resume_has_no_retained_packets(contract, tmp_path):
+    from soloify.audio import OggPackets
+
+    relay, peer, base = contract
+    await peer.packets(100)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    controls(base, b"s")
+    await until(lambda: peer.controls() == [b"s"])
+    await peer.send(wire.BOUNDARY, b"s")
+    await peer.send(wire.STATE, state(word="paused"))
+    await until(lambda: "state=paused\n" in read_state(base))
+    old = (tmp_path / "paused.ogg").read_bytes()
+    packets = OggPackets().feed(old)
+    assert len([p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]) == 100
+    controls(base, b"P")
+    await until(lambda: peer.controls() == [b"s", b"P"])
+    await peer.send(wire.BOUNDARY, b"P")
+    await peer.send(wire.STATE, state())
+    await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
+    await peer.packets(12)
+    await asyncio.sleep(2.5)
+    packets = OggPackets().feed((tmp_path / "paused.ogg").read_bytes()[len(old) :])
+    assert len([p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]) == 12
+
+
+@pytest.mark.parametrize("contract", ["record"], indirect=True)
+async def test_pause_drains_partial_startup_and_capture_tail(contract, tmp_path):
+    from soloify.audio import OggPackets
+
+    relay, peer, base = contract
+    await peer.packets(5)  # below the 200 ms startup target
+    controls(base, b"s")
+    await until(lambda: peer.controls() == [b"s"])
+    await peer.packets(2)  # the source's final fade can still arrive after Pause
+    await peer.send(wire.BOUNDARY, b"s")
+    await peer.send(wire.STATE, state(word="paused"))
+    await until(lambda: "state=paused\n" in read_state(base))
+    assert children(relay.proc.pid) == []
+    packets = OggPackets().feed((tmp_path / "paused.ogg").read_bytes())
+    assert len([p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]) == 7
+
+
+async def test_pause_without_capture_completion_still_releases_sink(contract):
+    relay, peer, base = contract
+    await peer.packets(40)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    controls(base, b"s")
+    await until(lambda: peer.controls() == [b"s"])
+    await until(lambda: "state=paused\n" in read_state(base), 9)
+    assert children(relay.proc.pid) == []
+    await relay.expect("pause drainage deadline")
+
+
+@pytest.mark.parametrize("contract", ["record"], indirect=True)
+async def test_play_during_drain_discards_old_tail_until_fresh_capture(contract, tmp_path):
+    from soloify.audio import OggPackets
+
+    relay, peer, base = contract
+    await peer.packets(40)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    controls(base, b"s", b"P")
+    await until(lambda: peer.controls() == [b"s", b"P"])
+    assert children(relay.proc.pid) == []
+    old = (tmp_path / "paused.ogg").read_bytes()
+    await peer.packets(30)  # old encoder tail is acknowledged but never queued again
+    await peer.send(wire.BOUNDARY, b"s")
+    await peer.send(wire.STATE, state(word="paused"))
+    await peer.send(wire.BOUNDARY, b"P")
+    await peer.send(wire.STATE, state())
+    await asyncio.sleep(0.25)
+    assert children(relay.proc.pid) == []
+    await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
+    await peer.packets(12)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    await asyncio.sleep(0.5)
+    fresh = (tmp_path / "paused.ogg").read_bytes()[len(old) :]
+    packets = OggPackets().feed(fresh)
+    assert len([p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]) == 12
 
 
 async def test_seek_discards_old_audio_and_metadata(contract):
@@ -275,7 +374,7 @@ async def test_crash_and_singleton(contract, tmp_path):
     def dead(pid):
         try:
             return Path(f"/proc/{pid}/stat").read_text().split()[2] == "Z"
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return True
 
     await until(lambda: all(dead(pid) for pid in pids))

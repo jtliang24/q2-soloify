@@ -23,6 +23,9 @@ AUDIO = b"a"  # u32 sequence, then one Opus packet
 STATE = b"s"  # the status file's key=value lines, less at=
 COVER = b"j"  # a track id, a newline, then the track's cover JPEG
 BOUNDARY = b"x"  # completed control, echoed; old audio has drained before a seek/skip boundary
+RESET_BEGIN = b"B"  # u32 browse correlation ID, after read-only preparation succeeds
+CAPTURE = b"g"  # u32 generation, u16 pre-skip, optional warmup Opus packet
+AUDIO_END = b"e"  # u32 sequence and u16 valid samples for the next (final) audio packet
 
 _HEAD = struct.Struct(">cI")
 

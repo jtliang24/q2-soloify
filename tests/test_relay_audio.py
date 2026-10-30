@@ -109,3 +109,26 @@ async def test_a_stall_neither_spins_the_relay_nor_repeats(tmp_path, relays):
     finally:
         await proxy.stop()
         await bridge.stop()
+
+
+async def test_fifteen_second_outage_reconnects_and_stays_stable(tmp_path, bridge, relays):
+    proxy = FreezingProxy(bridge.port)
+    port = await proxy.start()
+    relay = await Relay(
+        tmp_path,
+        [bridge.line(port=port) + " buffer=1000"],
+        env={"SOLOIFY_DECODE": DECODE, "SOLOIFY_SINK": REALTIME_SINK},
+    ).start()
+    relays.append(relay)
+    try:
+        await until(lambda: bridge.sessions and bridge.sessions[-1].acked > 100)
+        await proxy.freeze(15)
+        await until(lambda: len(bridge.sessions) >= 2 and bridge.sessions[-1].acked > 100, 15)
+        latest = bridge.sessions[-1]
+        before = bridge.encoders
+        await asyncio.sleep(5)
+        assert latest.streaming and bridge.encoders == before
+        assert len(latest.tasks) == 0
+        assert latest.inflight_ms() <= 1000
+    finally:
+        await proxy.stop()

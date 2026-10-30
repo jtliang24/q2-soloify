@@ -47,11 +47,15 @@ void put_be32(unsigned char *p, uint32_t v);
 /* ogg.c: one page per packet; out needs 27 + 6 + n bytes for a packet, 128 for the headers */
 struct ogg { uint32_t seq; uint64_t granule; };
 void ogg_init(void);
-int ogg_headers(struct ogg *o, unsigned char *out);
-int ogg_packet(struct ogg *o, unsigned char *out, const unsigned char *p, int n);
+int ogg_headers(struct ogg *o, unsigned char *out, unsigned skip);
+int ogg_packet(struct ogg *o, unsigned char *out, const unsigned char *p, int n, unsigned samples, int end);
 
 /* sink.c: the decoder and aplay.sh; sink_start gives the pipe to write the Ogg into */
 int sink_start(void);
+int sink_next(int fd); /* drain/reap only the decoder, retaining the PCM player */
+void sink_finish(int fd);
+void sink_drain(void); /* EOF to the PCM player; reap after its hardware tail finishes */
+int sink_player(void);
 void sink_stop(void);
 int sink_exited(void);
 
@@ -63,16 +67,23 @@ void q2pod_config(int valid);
 void q2pod_link(int up);
 void q2pod_frame(int type, const unsigned char *p, int n);
 void q2pod_started(void); /* the first buffered packet is about to reach the decoder */
+void q2pod_paused(void); /* queued audio and the PCM player's hardware tail have drained */
+void q2pod_capture(void); /* a fresh encoder begins after ordered control boundaries */
 int q2pod_wants(void);
 int q2pod_audio(void);
+int q2pod_ready(void);
 
 /* audio.c: the ring, the Ogg stream and the sink */
 void audio_start(int target_ms); /* a link is up, with this buffer target */
-void audio_packet(const unsigned char *p, int n);
+void audio_packet(const unsigned char *p, int n, unsigned seq);
 int audio_pollfd(struct pollfd *pfd); /* 1 with *pfd set when the sink wants waiting on */
 void audio_service(short revents);
 void audio_tick(void);
-void audio_enable(int enabled); /* stop/reap, retaining the ring, or resume it */
+void audio_enable(int enabled); /* stop/reap and clear, or enable fresh capture */
+void audio_pause(void);
+void audio_pause_end(void); /* bridge has stopped capture and sent its final packet */
+void audio_capture(unsigned generation, unsigned skip, const unsigned char *primer, int n);
+void audio_end(unsigned seq, unsigned samples);
 void audio_clear(void); /* a seek/skip: stop and discard everything */
 uint64_t audio_received(void);
 uint64_t audio_played(void);

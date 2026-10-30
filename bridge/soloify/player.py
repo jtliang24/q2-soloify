@@ -81,6 +81,9 @@ class Player:
         self.state = State()
         self.pending: asyncio.TimerHandle | None = None
         self.paused_by_us = False
+        self.explicit_paused = False
+        self.recovery_pausing = False
+        self.capture_changed = None
         self.relay: asyncio.StreamWriter | None = None
         self.sent: tuple | None = None
         self.deferred = False  # a control's state follows its ordered boundary
@@ -97,8 +100,16 @@ class Player:
 
     def event(self, event: dict) -> None:
         """One event from Soloist's WebSocket."""
+        was_playing = self.state.playing
         self.state.apply(event)
         s = self.state
+        if event.get("status") == "paused" and not self.recovery_pausing and not self.paused_by_us:
+            self.explicit_paused = True
+            self._stalled(False)
+        elif event.get("status") == "playing":
+            self.explicit_paused = False
+        if self.capture_changed and was_playing != s.playing and not self.recovery_pausing:
+            self.capture_changed(s.playing)
         if (
             event.get("type")
             in ("auth_state", "device_changed", "playback_state", "volume_changed")
@@ -176,6 +187,7 @@ class Player:
         if op == b"p":
             op = b"s" if self.state.playing else b"P"
         if op in (b"P", b"s"):
+            self.explicit_paused = op == b"s"
             self._stalled(False)  # the user's choice from now on
             await self.ws.command("play" if op == b"P" else "pause")
         elif op == b"n":
@@ -190,16 +202,24 @@ class Player:
     # The stall rule
 
     async def pause(self) -> None:
-        if self.ws and not self.paused_by_us and self.state.playing:
-            if await self.ws.command("pause"):
-                self._stalled(True)
-                # The encoder runs on until Soloist has stopped, so no audio is lost between the two
-                await asyncio.sleep(self.PAUSE_SETTLE)
+        if (
+            self.ws
+            and not self.explicit_paused
+            and self.state.playing
+            and (not self.paused_by_us or self.state.word == "playing")
+        ):
+            self.recovery_pausing = True
+            try:
+                if await self.ws.command("pause"):
+                    self._stalled(True)
+                    await asyncio.sleep(self.PAUSE_SETTLE)
+            finally:
+                self.recovery_pausing = False
 
     async def resume(self) -> None:
-        if self.ws and self.paused_by_us:
-            self._stalled(False)
-            await self.ws.command("play")
+        if self.ws and self.paused_by_us and not self.explicit_paused:
+            if await self.ws.command("play"):
+                self._stalled(False)
 
     def _stalled(self, paused_by_us: bool) -> None:
         self.paused_by_us = self.state.stalled = paused_by_us

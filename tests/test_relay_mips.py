@@ -41,7 +41,7 @@ async def test_device_build_plays_through_the_stock_ffmpeg(tmp_path, device):
     exe, rootfs = device
     bridge = await Bridge(tmp_path / "data").start()
     decode = f"qemu-mipsel -L {rootfs} {rootfs}/usr/bin/ffmpeg" + (
-        " -nostdin -loglevel error -probesize 32 -analyzeduration 0 -fflags nobuffer"
+        " -nostdin -loglevel error -probesize 32 -analyzeduration 0"
         " -f ogg -i pipe:0 -ac 2 -ar 44100 -f s16le pipe:1"
     )
     env = {
@@ -96,3 +96,25 @@ async def test_device_build_forwards_browser(tmp_path, device):
         finally:
             await relay.stop()
             await bridge.stop()
+
+
+@pytest.mark.parametrize("warmup", [False, True])
+@pytest.mark.parametrize("paused", [False, True])
+async def test_stock_decoder_joins_encoder_generations_without_a_blip(
+    tmp_path, device, warmup, paused
+):
+    from test_codec_join import check_codec_join
+
+    exe, rootfs = device
+    decode = f"qemu-mipsel -L {rootfs} {rootfs}/usr/bin/ffmpeg" + (
+        " -nostdin -loglevel error -probesize 32 -analyzeduration 0"
+        " -f ogg -i pipe:0 -ac 2 -ar 44100 -f s16le pipe:1"
+    )
+    await check_codec_join(
+        tmp_path,
+        warmup,
+        ["qemu-mipsel", "-L", str(rootfs), str(exe)],
+        decode,
+        shutil.which("sh"),
+        paused=paused,
+    )
