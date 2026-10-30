@@ -104,6 +104,7 @@ __attribute__((noreturn)) void _exit(int);
 int poll(struct pollfd *, nfds_t, int), clock_gettime(int, struct timespec *);
 void (*signal(int, void (*)(int)))(int);
 int socket(int, int, int), connect(int, const struct sockaddr *, socklen_t), bind(int, const struct sockaddr *, socklen_t);
+int getpgid(int);
 int getpid(void), unlink(const char *), rename(const char *, const char *);
 int getppid(void), prctl(int, ...), flock(int, int);
 int listen(int, int), accept(int, struct sockaddr *, socklen_t *);
@@ -115,7 +116,7 @@ void *memcpy(void *, const void *, size_t), *memmove(void *, const void *, size_
 void *memchr(const void *, int, size_t);
 int memcmp(const void *, const void *, size_t), strcmp(const char *, const char *), strncmp(const char *, const char *, size_t);
 size_t strlen(const char *);
-char *getenv(const char *), *strchr(const char *, int);
+char *getenv(const char *), *strchr(const char *, int), *strstr(const char *, const char *);
 long strtol(const char *, char **, int);
 int snprintf(char *, size_t, const char *, ...), vsnprintf(char *, size_t, const char *, va_list);
 

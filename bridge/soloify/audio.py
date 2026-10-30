@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from . import wire
 from .player import Player
+from .rewind import RestoreError
 from .soloist import SINK
 
 log = logging.getLogger("soloify")
@@ -178,7 +179,10 @@ class Session:
         self.capture_release = asyncio.Event()
         self.last_ack = 0.0
         self.capture_blocked = False
-        self.pause_completed_generation = -1
+        self.rewind = player.rewind
+        self.awaiting_bookmark = False
+        self.mutating = False
+        self.pausing = False
 
     @property
     def streaming(self) -> bool:
@@ -221,6 +225,14 @@ class Session:
                         while self.unacked and self.unacked[0][0] < count:
                             self.unacked.popleft()
                         self.ack_progress.set()
+                elif kind == wire.BOOKMARK:
+                    if len(self.control_tasks) >= 32 or not 4 <= len(payload) <= 1540:
+                        raise wire.WireError("invalid pause bookmark")
+                    self.capture_blocked = True
+                    self.awaiting_bookmark = True
+                    task = asyncio.create_task(self.pause_bookmark(payload))
+                    self.control_tasks.add(task)
+                    task.add_done_callback(self.control_tasks.discard)
                 elif kind == wire.CONTROL:
                     if len(self.control_tasks) >= 32:
                         raise wire.WireError("too many controls")
@@ -284,6 +296,8 @@ class Session:
                     log.info(
                         "reset begin browse=%d gen=%d", int.from_bytes(correlation), self.generation
                     )
+                    self.rewind.bookmark = None
+                    self.awaiting_bookmark = False
                     self.writer.write(wire.frame(wire.RESET_BEGIN, correlation))
                     await self._halt("control")
                 result = await action()
@@ -305,25 +319,45 @@ class Session:
                 self.player.flush()
 
     def playback_changed(self, playing):
-        """External state transitions join the same ordered lock as local controls/capture."""
-        generation = self.generation
-        # A resume probe must not overtake a queued external pause.
+        """External pause stops local output before capture shutdown or source restoration."""
+        if (
+            playing
+            and self.player.transition_snapshot
+            and (self.rewind.bookmark or self.awaiting_bookmark)
+        ):
+            return  # a reconnect snapshot is not an explicit phone Play
+        if playing and self.pausing and not self.rewind.navigating:
+            # Phone Play during encoder shutdown/seek must not disappear behind the
+            # restore lock. Skip's temporary auto-play is internal navigation instead.
+            self.writer.write(wire.frame(wire.PAUSE_NOW, b"P"))
+            return
+        if self.mutating or self.player.recovery_pausing or self.player.timeline.restoring:
+            return
         if not playing:
             self.capture_blocked = True
-        task = asyncio.create_task(self._playback_changed(playing, generation))
-        self.control_tasks.add(task)
-        task.add_done_callback(self.control_tasks.discard)
+            if self.player.state.state == "paused":
+                self.awaiting_bookmark = True
+                self.writer.write(wire.frame(wire.PAUSE_NOW))
+            task = asyncio.create_task(self.halt("pause", self.generation))
+            self.control_tasks.add(task)
+            task.add_done_callback(self.control_tasks.discard)
+        elif self.rewind.bookmark or self.awaiting_bookmark:
+            # Ask the relay to order Play after its bookmark. Never capture a phone's
+            # premature Play at the source's still-ahead position.
+            self.writer.write(wire.frame(wire.PAUSE_NOW, b"P"))
+        else:
+            task = asyncio.create_task(self._playback_changed(playing, self.generation))
+            self.control_tasks.add(task)
+            task.add_done_callback(self.control_tasks.discard)
 
     async def _playback_changed(self, playing, generation):
         async with self.lock:
-            if not playing:
-                if generation != self.generation or generation == self.pause_completed_generation:
-                    return
-                await asyncio.sleep(self.player.PAUSE_SETTLE)
-                await self._halt("pause", generation)
-                self.writer.write(wire.frame(wire.BOUNDARY, b"s"))
-                self.pause_completed_generation = generation
-            else:
+            if (
+                playing
+                and generation == self.generation
+                and not self.awaiting_bookmark
+                and not self.rewind.bookmark
+            ):
                 self.capture_blocked = False
                 if (
                     self.audio_request is not None
@@ -331,14 +365,49 @@ class Session:
                     and not self.streaming
                     and not self.reset_controls
                 ):
-                    # The phone already issued Play. Capture now rather than waiting up to
-                    # a second for the relay probe, which would lose that second at the join.
                     self.player.sent = None
                     self.player.flush()
                     if self.player.paused_by_us:
                         await self._want()
                     else:
                         await self._start_capture()
+
+    def restored(self, success, message=""):
+        bookmark = self.rewind.bookmark
+        if bookmark:
+            self.writer.write(
+                wire.frame(
+                    wire.RESTORED, bookmark.correlation + bytes([success]) + message.encode()[:512]
+                )
+            )
+
+    async def pause_bookmark(self, payload):
+        async with self.lock:
+            self.pausing = True
+            self.mutating = self.player.deferred = True
+            self.player.explicit_paused = True
+            self.player._stalled(False)
+            try:
+                previous = self.rewind.bookmark
+                try:
+                    self.rewind.remember(payload)
+                except (ValueError, UnicodeError):
+                    self.rewind.remember(payload[:4])
+                await self.player.control(b"s")
+                await self._halt("pause")
+                if self.rewind.bookmark is previous and previous.failed:
+                    raise RestoreError(previous.failed)  # retry only on explicit Play
+                await self.rewind.restore()
+                self.restored(True)
+            except RestoreError as error:
+                log.warning("pause restore failed: %s", error)
+                self.restored(False, str(error))
+            finally:
+                self.awaiting_bookmark = False
+                self.pausing = False
+                self.mutating = self.player.deferred = False
+                self.player.sent = None
+                self.player.flush()
 
     def target(self, payload: bytes) -> None:
         """`A 1 MS` carries the relay's buffer target, which is also the in-flight limit: a stall
@@ -353,7 +422,14 @@ class Session:
             await self._want()
 
     async def _want(self) -> None:
-        if self.streaming or self.halting or self.reset_controls or self.capture_blocked:
+        if (
+            self.streaming
+            or self.halting
+            or self.reset_controls
+            or self.capture_blocked
+            or self.awaiting_bookmark
+            or self.rewind.bookmark
+        ):
             return
         if self.inflight_ms() > self.limit // 2:
             return  # what's in flight from before a stall hasn't drained yet
@@ -449,11 +525,17 @@ class Session:
         """Old capture drains before its boundary. Prime capture BEFORE the final mutation:
         Soloist can auto-play on skip even when paused, so starting afterward loses the intro."""
         async with self.lock:
-            self.player.deferred = True
+            self.mutating = self.player.deferred = True
             primed = False
             try:
                 reset = payload[:1] in (b"n", b"b", b"S")
                 taking_audio = self.streaming or self.audio_request is not None
+                if reset:
+                    self.rewind.bookmark = None
+                    self.awaiting_bookmark = False
+                if payload[:1] == b"P" and self.rewind.bookmark:
+                    await self.rewind.restore()
+                    self.restored(True)
                 if payload[:1] == b"P" and taking_audio and not self.streaming:
                     self.capture_blocked = False
                     await self._start_capture(priming=True)
@@ -467,27 +549,47 @@ class Session:
                         primed = True
                 if primed:
                     self.encoder.present_at = time.time()
-                await self.player.control(payload)
+                if payload[:1] == b"P" and self.rewind.bookmark:
+                    self.player.explicit_paused = False
+                    self.player._stalled(False)
+                    await self.rewind.command("play")
+                    await self.rewind.snapshot(lambda state: state.word == "playing")
+                else:
+                    await self.player.control(payload)
                 if payload[:1] == b"s":
-                    # Capture the source's pause fade, then let the relay drain it in order.
-                    await asyncio.sleep(self.player.PAUSE_SETTLE)
+                    # Local output has already stopped; no pause fade needs to be retained.
+                    self.capture_blocked = True
                     await self._halt("pause")
                 if primed:
                     if self.player.state.word == "playing":
                         self.player._stalled(False)  # Soloist auto-played; capture already has it
                     else:
                         await self.player.resume()
+                if payload[:1] == b"P":
+                    self.rewind.bookmark = None
                 await asyncio.sleep(self.player.SETTLE)
+            except RestoreError as error:
+                self.capture_blocked = True
+                self.player.explicit_paused = True
+                self.restored(False, str(error))
+                log.warning("resume restore failed: %s", error)
+                await self._halt("pause")
+                if self.player.ws:
+                    await self.player.ws.command("pause")
             except TimeoutError:
                 log.info("control capture deadline gen=%d", self.generation)
                 await self._halt("pause")  # no mutation was dispatched; never replay it
+                if self.rewind.bookmark:
+                    self.player.explicit_paused = True
+                    self.capture_blocked = True
+                    self.restored(False, "Capture or playback confirmation timed out")
+                    if self.player.ws:
+                        await self.player.ws.command("pause")
             finally:
-                if payload[:1] == b"s":
-                    self.pause_completed_generation = self.generation
                 self.writer.write(wire.frame(wire.BOUNDARY, payload))
                 self.player.sent = None
                 self.player._send_cover()
-                self.player.deferred = False
+                self.mutating = self.player.deferred = False
                 if queued and payload[:1] in (b"n", b"b", b"S"):
                     self.reset_controls -= 1
                 self.player.flush()
@@ -515,7 +617,11 @@ class Session:
         announced, last_burst_log = False, 0.0
         primer = b""
         skip, discard = 312, 0
+        source_samples = 0
+        remaining_skip = None
         async for packet in encoder.packets():
+            packet_start = source_samples
+            source_samples += 960
             end_samples = packet.samples if isinstance(packet, OpusTail) else None
             if isinstance(packet, OpusTail):
                 packet = packet.data
@@ -579,6 +685,24 @@ class Session:
                     )
                 )
                 announced = True
+                remaining_skip = max(0, skip - (960 if primer else 0))
+            valid = 960 if end_samples is None else end_samples
+            hidden = min(remaining_skip, valid)
+            remaining_skip -= hidden
+            capture_at = getattr(encoder, "capture_at", None)
+            if capture_at is not None and valid > hidden:
+                at = capture_at * 1000 + (packet_start + hidden - 312) / 48
+                event_wait = (at / 1000 + self.player.SETTLE) - time.time()
+                if 0 < event_wait <= self.player.SETTLE and self.player.ws:
+                    await asyncio.sleep(event_wait)
+                if generation != self.generation or self.writer.is_closing():
+                    continue
+                anchor = self.player.timeline.anchor(at)
+                # An explicit invalid anchor prevents accidentally extending the previous
+                # track through a timestamp gap or an unconfirmed source transition.
+                self.writer.write(wire.frame(wire.TIMELINE, anchor or b"token=0\nposition=0\n"))
+            elif valid > hidden:
+                self.writer.write(wire.frame(wire.TIMELINE, b"token=0\nposition=0\n"))
             if end_samples is not None:
                 self.writer.write(
                     wire.frame(wire.AUDIO_END, struct.pack(">IH", self.sent, end_samples))

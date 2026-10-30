@@ -69,7 +69,19 @@ async def _replay() -> tuple[list[str], FakeWS]:
         if since is None and player.pending:
             since = e["t"]
     player.flush()
-    return _frames(writer.frames), ws
+    # Presentation tokens are internal; keep this recorded contract check focused on
+    # the unchanged firmware fields. Timeline identity is covered by test_rewind.py.
+    frames = [
+        data
+        if data[:1] != wire.STATE
+        else wire.frame(
+            wire.STATE,
+            b"\n".join(line for line in data[5:].splitlines() if not line.startswith(b"token="))
+            + b"\n",
+        )
+        for data in writer.frames
+    ]
+    return _frames(frames), ws
 
 
 SOMETHING = "track=1NeLwFETswx8Fzxl2AFl91 title=Something About Us artist=Daft Punk album=Discovery"

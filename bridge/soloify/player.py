@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 import aiohttp
 
 from . import wire
+from .rewind import Rewind, Timeline
 from .state import State
 
 log = logging.getLogger("soloify")
@@ -79,6 +80,8 @@ class Player:
         self.fetch_cover = cover
         self.clock = clock
         self.state = State()
+        self.timeline = Timeline()
+        self.rewind = Rewind(self)
         self.pending: asyncio.TimerHandle | None = None
         self.paused_by_us = False
         self.explicit_paused = False
@@ -86,6 +89,8 @@ class Player:
         self.capture_changed = None
         self.relay: asyncio.StreamWriter | None = None
         self.sent: tuple | None = None
+        self.initial_snapshot = True
+        self.transition_snapshot = False
         self.deferred = False  # a control's state follows its ordered boundary
         self.cover: tuple[str, bytes] | None = None  # (track uri, JPEG)
         self.fetching: str | None = None
@@ -101,12 +106,26 @@ class Player:
     def event(self, event: dict) -> None:
         """One event from Soloist's WebSocket."""
         was_playing = self.state.playing
+        kind = event.get("type")
+        if kind == "gone":
+            self.initial_snapshot = True
+        self.transition_snapshot = kind in ("auth_state", "device_changed", "gone") or (
+            kind == "playback_state" and self.initial_snapshot
+        )
+        if kind == "playback_state":
+            self.initial_snapshot = False
         self.state.apply(event)
         s = self.state
-        if event.get("status") == "paused" and not self.recovery_pausing and not self.paused_by_us:
+        self.timeline.record(s, event, self.clock())
+        if (
+            event.get("status") == "paused"
+            and not self.recovery_pausing
+            and not self.paused_by_us
+            and not self.timeline.restoring
+        ):
             self.explicit_paused = True
             self._stalled(False)
-        elif event.get("status") == "playing":
+        elif event.get("status") == "playing" and not self.timeline.restoring:
             self.explicit_paused = False
         if self.capture_changed and was_playing != s.playing and not self.recovery_pausing:
             self.capture_changed(s.playing)
@@ -172,7 +191,7 @@ class Player:
         if key == self.sent:
             return
         self.sent = key
-        lines = self.state.lines(self._has_cover(), self.clock())
+        lines = self.timeline.known_start(self.state, self.clock(), self._has_cover())
         self.relay.write(wire.frame(wire.STATE, lines))
 
     def _send_cover(self) -> None:

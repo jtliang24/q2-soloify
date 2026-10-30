@@ -52,9 +52,9 @@ int ogg_packet(struct ogg *o, unsigned char *out, const unsigned char *p, int n,
 
 /* sink.c: the decoder and aplay.sh; sink_start gives the pipe to write the Ogg into */
 int sink_start(void);
+int sink_rendered(uint64_t *frames, unsigned *rate);
 int sink_next(int fd); /* drain/reap only the decoder, retaining the PCM player */
 void sink_finish(int fd);
-void sink_drain(void); /* EOF to the PCM player; reap after its hardware tail finishes */
 int sink_player(void);
 void sink_stop(void);
 int sink_exited(void);
@@ -67,7 +67,7 @@ void q2pod_config(int valid);
 void q2pod_link(int up);
 void q2pod_frame(int type, const unsigned char *p, int n);
 void q2pod_started(void); /* the first buffered packet is about to reach the decoder */
-void q2pod_paused(void); /* queued audio and the PCM player's hardware tail have drained */
+void q2pod_paused(void); /* stop/reap before publishing the frozen bookmark */
 void q2pod_capture(void); /* a fresh encoder begins after ordered control boundaries */
 int q2pod_wants(void);
 int q2pod_audio(void);
@@ -81,7 +81,7 @@ void audio_service(short revents);
 void audio_tick(void);
 void audio_enable(int enabled); /* stop/reap and clear, or enable fresh capture */
 void audio_pause(void);
-void audio_pause_end(void); /* bridge has stopped capture and sent its final packet */
+int audio_bookmark(uint64_t *sample); /* hardware presentation sample clock, in ms */
 void audio_capture(unsigned generation, unsigned skip, const unsigned char *primer, int n);
 void audio_end(unsigned seq, unsigned samples);
 void audio_clear(void); /* a seek/skip: stop and discard everything */

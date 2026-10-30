@@ -96,7 +96,7 @@ static int pull(uint64_t *last_rx) {
 
 static int hello(const struct endpoint *ep) {
     char line[128];
-    int n = snprintf(line, sizeof line, "hello 1 %s\n", ep->token);
+    int n = snprintf(line, sizeof line, "hello 2 %s\n", ep->token);
     uint64_t deadline = now_ms() + HELLO_MS, rx = 0;
     memset(&wire, 0, sizeof wire);
     memcpy(wire.out, line, n);
@@ -108,7 +108,7 @@ static int hello(const struct endpoint *ep) {
         if (pull(&rx) < 0) return -1;
         if ((nl = memchr(wire.in, '\n', wire.nin))) {
             n = nl + 1 - wire.in;
-            if (n != 5 || memcmp(wire.in, "ok 1\n", 5)) return -1;
+            if (n != 5 || memcmp(wire.in, "ok 2\n", 5)) return -1;
             memmove(wire.in, wire.in + n, wire.nin - n);
             wire.nin -= n;
             return 0;

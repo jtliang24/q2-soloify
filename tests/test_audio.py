@@ -194,7 +194,7 @@ async def test_beep_over_tls_stalls_and_resumes(tmp_path):
 
 
 async def _beep_stall_and_resume(identity, reader, writer):
-    writer.write(b"hello 1 %s\n" % identity.token.encode() + wire.frame(wire.AUDIO_REQUEST, b"1"))
+    writer.write(b"hello 2 %s\n" % identity.token.encode() + wire.frame(wire.AUDIO_REQUEST, b"1"))
     assert await reader.readline() == wire.OK
     assert await wire.read_frame(reader) == (wire.STATE, b"state=none\n")  # the test source's
     # No acks: the stall stops the encoder once 400 ms are in flight; ffmpeg's flush adds some
@@ -204,7 +204,7 @@ async def _beep_stall_and_resume(identity, reader, writer):
             kind, payload = await asyncio.wait_for(wire.read_frame(reader), 1.5)
         except TimeoutError:
             break
-        if kind in (wire.CAPTURE, wire.AUDIO_END):
+        if kind in (wire.CAPTURE, wire.AUDIO_END, wire.TIMELINE):
             continue
         assert kind == wire.AUDIO
         seqs.append(struct.unpack(">I", payload[:4])[0])
@@ -215,6 +215,8 @@ async def _beep_stall_and_resume(identity, reader, writer):
     kind, payload = await asyncio.wait_for(wire.read_frame(reader), 3)
     assert kind == wire.CAPTURE
     kind, payload = await asyncio.wait_for(wire.read_frame(reader), 3)
+    while kind == wire.TIMELINE:
+        kind, payload = await asyncio.wait_for(wire.read_frame(reader), 3)
     assert (kind, payload[:4]) == (wire.AUDIO, struct.pack(">I", len(seqs)))
 
 

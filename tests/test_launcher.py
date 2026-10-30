@@ -33,6 +33,9 @@ async def test_launcher_singleton_stop_and_restart(tmp_path):
         try:
             await asyncio.gather(*(launch(tmp_path, env) for _ in range(3)))
             await until(lambda: Path(f"{base}.sock").exists())
+            # Contending background launchers allow the owner up to one second to
+            # publish its pid. Let all three startup attempts settle before Stop.
+            await asyncio.sleep(1.1)
             loop = int(base.read_text())
             child_path = Path(f"/proc/{loop}/task/{loop}/children")
             child = int(child_path.read_text().split()[0])

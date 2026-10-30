@@ -13,10 +13,10 @@ from soloify import browse as protocol
 from soloify import server, wire
 
 
-def state(track="a", word="playing", position=1000, cover=True):
+def state(track="a", word="playing", position=1000, cover=True, token=1):
     return (
         f"state={word}\ntrack={track}\ntitle=Title {track}\nartist=Artist\nalbum=Album\n"
-        f"duration=300000\nposition={position}\n" + ("cover=1\n" if cover else "")
+        f"duration=300000\nposition={position}\ntoken={token}\n" + ("cover=1\n" if cover else "")
     ).encode()
 
 
@@ -41,7 +41,7 @@ class Peer:
             if self.writer is writer:
                 self.writer = None
 
-    async def send(self, kind, payload, chunk=0):
+    async def send(self, kind, payload=b"", chunk=0):
         data = wire.frame(kind, payload)
         for start in range(0, len(data), chunk or len(data)):
             self.writer.write(data[start : start + (chunk or len(data))])
@@ -57,7 +57,18 @@ class Peer:
             await self.send(wire.AUDIO, i.to_bytes(4, "big") + b"\xfc\xff\xfe")
 
     def controls(self):
-        return [p for k, p in self.frames if k == wire.CONTROL]
+        return [
+            b"s" if k == wire.BOOKMARK else p
+            for k, p in self.frames
+            if k in (wire.CONTROL, wire.BOOKMARK)
+        ]
+
+    def bookmarks(self):
+        return [p for k, p in self.frames if k == wire.BOOKMARK]
+
+    async def restored(self, success=True):
+        request = self.bookmarks()[-1]
+        await self.send(wire.RESTORED, request[:4] + bytes([success]) + b"test")
 
 
 @pytest.fixture
@@ -69,7 +80,7 @@ async def contract(tmp_path, request):
         peer.listener = await peer.server.start("127.0.0.1", 0)
         port = peer.listener.sockets[0].getsockname()[1]
         line = f"127.0.0.1 {port} {peer.identity.token} sha256={peer.identity.pin}"
-        env = {"SOLOIFY_Q2POD": str(base)}
+        env = {"SOLOIFY_Q2POD": str(base), "SOLOIFY_ASOUND": str(tmp_path / "asound")}
         if getattr(request, "param", None) == "record":
             env["SOLOIFY_DECODE"] = f"cat >> {tmp_path / 'paused.ogg'}"
             env["SOLOIFY_SINK"] = "cat >/dev/null"  # closes on drain EOF even without PCM
@@ -172,134 +183,148 @@ async def test_metadata_waits_with_audio(contract):
     assert Path(f"{base}.state.jpg").read_bytes() == b"\xff\xd8bbb\xff\xd9"
 
 
-async def test_pause_drains_sink_before_state_and_resume_requires_fresh_capture(contract):
+async def test_pause_stops_sink_immediately_and_resume_requires_fresh_capture(contract):
     relay, peer, base = contract
     await peer.packets(40)
     await until(lambda: len(children(relay.proc.pid)) == 2)
     pids = children(relay.proc.pid)
+    began = time.monotonic()
     controls(base, b"s")
-    await until(lambda: peer.controls() == [b"s"])
-    assert "state=playing\n" in read_state(base)
-    assert children(relay.proc.pid) == pids
-    await peer.send(wire.BOUNDARY, b"s")
-    await peer.send(wire.STATE, state(word="paused", position=9000))
-    await until(lambda: "state=paused\n" in read_state(base))
+    await until(lambda: "state=paused\n" in read_state(base), step=0.005)
+    assert time.monotonic() - began < 0.2
     assert all(not Path(f"/proc/{pid}").exists() for pid in pids)
-    await until(lambda: (wire.AUDIO_REQUEST, b"0 pause") in peer.frames)
+    await until(lambda: peer.bookmarks())
+    # No hardware cursor exists for this cat sink: fail safely, never invent an offset.
+    assert peer.bookmarks()[-1][4:] == b""
     frozen = read_state(base)
-    await asyncio.sleep(0.1)
     await peer.send(wire.STATE, state(word="paused", position=9000))
     await asyncio.sleep(0.1)
-    # The paused position remains frozen, including at=.
     assert read_state(base) == frozen
     controls(base, b"P")
     await until(lambda: peer.controls() == [b"s", b"P"])
+    await peer.restored()
     await peer.send(wire.BOUNDARY, b"P")
     await peer.send(wire.STATE, state())
-    await asyncio.sleep(0.3)  # startup may be slow: no old packets may restart the sink
+    await peer.packets(20)  # old tail, even after the restore response
+    await asyncio.sleep(0.1)
     assert children(relay.proc.pid) == []
     await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
-    await peer.packets(12)  # fresh refill includes Opus pre-skip
+    await peer.packets(12)
     await until(lambda: len(children(relay.proc.pid)) == 2)
 
 
-async def test_rapid_toggles_ignore_stale_state(contract):
+async def test_rapid_toggles_preserve_bookmark_and_ignore_stale_state(contract):
     _, peer, base = contract
     controls(base, b"p", b"p", b"p")
     await until(lambda: len(peer.controls()) == 3)
-    assert peer.controls() == [b"s", b"P", b"s"]
-    await peer.send(wire.BOUNDARY, b"s")
-    await peer.send(wire.STATE, state(word="paused"))
+    assert peer.controls() == [b"s", b"P", b"s"]  # final Pause retains the same bookmark
+    request = peer.bookmarks()[0]
+    await peer.restored()
     await peer.send(wire.BOUNDARY, b"P")
     await peer.send(wire.STATE, state())
     await asyncio.sleep(0.1)
     assert "state=paused\n" in read_state(base)
-
-    await peer.send(wire.BOUNDARY, b"s")
-    await peer.send(wire.STATE, state(word="paused"))
-    await asyncio.sleep(0.1)
-    assert "state=paused\n" in read_state(base)
+    assert peer.bookmarks() == [request, request]
 
 
 @pytest.mark.parametrize("contract", ["record"], indirect=True)
-async def test_pause_drains_every_packet_and_resume_has_no_retained_packets(contract, tmp_path):
+async def test_pause_discards_queue_and_capture_tail(contract, tmp_path):
     from soloify.audio import OggPackets
 
     relay, peer, base = contract
     await peer.packets(100)
     await until(lambda: len(children(relay.proc.pid)) == 2)
+    await until(
+        lambda: (tmp_path / "paused.ogg").exists() and (tmp_path / "paused.ogg").stat().st_size > 0
+    )
     controls(base, b"s")
-    await until(lambda: peer.controls() == [b"s"])
-    await peer.send(wire.BOUNDARY, b"s")
-    await peer.send(wire.STATE, state(word="paused"))
-    await until(lambda: "state=paused\n" in read_state(base))
+    await until(lambda: peer.bookmarks())
     old = (tmp_path / "paused.ogg").read_bytes()
     packets = OggPackets().feed(old)
-    assert len([p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]) == 100
+    assert len([p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]) < 100
+    await peer.packets(20)
+    await peer.send(wire.BOUNDARY, b"s")
+    await asyncio.sleep(0.1)
+    assert (tmp_path / "paused.ogg").read_bytes() == old
+    assert not children(relay.proc.pid)
     controls(base, b"P")
     await until(lambda: peer.controls() == [b"s", b"P"])
+    await peer.restored()
     await peer.send(wire.BOUNDARY, b"P")
     await peer.send(wire.STATE, state())
     await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
     await peer.packets(12)
-    await asyncio.sleep(2.5)
+    await asyncio.sleep(0.6)
     packets = OggPackets().feed((tmp_path / "paused.ogg").read_bytes()[len(old) :])
     assert len([p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]) == 12
 
 
-@pytest.mark.parametrize("contract", ["record"], indirect=True)
-async def test_pause_drains_partial_startup_and_capture_tail(contract, tmp_path):
-    from soloify.audio import OggPackets
-
+@pytest.mark.parametrize("packets", [0, 1, 5, 10])
+async def test_startup_pause_never_starts_output_and_preserves_opening(contract, packets):
     relay, peer, base = contract
-    await peer.packets(5)  # below the 200 ms startup target
-    controls(base, b"s")
-    await until(lambda: peer.controls() == [b"s"])
-    await peer.packets(2)  # the source's final fade can still arrive after Pause
-    await peer.send(wire.BOUNDARY, b"s")
-    await peer.send(wire.STATE, state(word="paused"))
-    await until(lambda: "state=paused\n" in read_state(base))
+    # 10 packets still fall just below 200 ms after the encoder's pre-skip.
+    await peer.send(wire.TIMELINE, state(position=1234, token=7))
+    await peer.packets(packets)
     assert children(relay.proc.pid) == []
-    packets = OggPackets().feed((tmp_path / "paused.ogg").read_bytes())
-    assert len([p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]) == 7
-
-
-async def test_pause_without_capture_completion_still_releases_sink(contract):
-    relay, peer, base = contract
-    await peer.packets(40)
-    await until(lambda: len(children(relay.proc.pid)) == 2)
     controls(base, b"s")
-    await until(lambda: peer.controls() == [b"s"])
-    await until(lambda: "state=paused\n" in read_state(base), 9)
+    await until(lambda: peer.bookmarks())
+    assert peer.bookmarks()[-1][4:] == b"token=7\nposition=1234\n"
+    assert "position=1234\n" in read_state(base)
+    await peer.packets(30)  # late audio must not fill/start the cancelled buffer
+    await asyncio.sleep(0.1)
     assert children(relay.proc.pid) == []
-    await relay.expect("pause drainage deadline")
-
-
-@pytest.mark.parametrize("contract", ["record"], indirect=True)
-async def test_play_during_drain_discards_old_tail_until_fresh_capture(contract, tmp_path):
-    from soloify.audio import OggPackets
-
-    relay, peer, base = contract
-    await peer.packets(40)
-    await until(lambda: len(children(relay.proc.pid)) == 2)
-    controls(base, b"s", b"P")
+    controls(base, b"P")
     await until(lambda: peer.controls() == [b"s", b"P"])
-    assert children(relay.proc.pid) == []
-    old = (tmp_path / "paused.ogg").read_bytes()
-    await peer.packets(30)  # old encoder tail is acknowledged but never queued again
-    await peer.send(wire.BOUNDARY, b"s")
-    await peer.send(wire.STATE, state(word="paused"))
+    await peer.restored()
     await peer.send(wire.BOUNDARY, b"P")
-    await peer.send(wire.STATE, state())
-    await asyncio.sleep(0.25)
-    assert children(relay.proc.pid) == []
+    await peer.send(wire.STATE, state(position=1234))
     await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
     await peer.packets(12)
     await until(lambda: len(children(relay.proc.pid)) == 2)
-    await asyncio.sleep(0.5)
-    fresh = (tmp_path / "paused.ogg").read_bytes()[len(old) :]
-    packets = OggPackets().feed(fresh)
-    assert len([p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]) == 12
+
+
+async def test_failed_restore_cannot_start_output_and_retries_on_play(contract):
+    relay, peer, base = contract
+    controls(base, b"s")
+    await until(lambda: peer.bookmarks())
+    request = peer.bookmarks()[0]
+    await peer.restored(False)
+    controls(base, b"P")
+    await until(lambda: peer.controls() == [b"s", b"P"])
+    # A late success for a different correlation must not open the gate.
+    await peer.send(wire.RESTORED, b"\xff" * 4 + b"\x01")
+    await peer.send(wire.BOUNDARY, b"P")
+    await peer.send(wire.STATE, state())
+    await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
+    await peer.packets(30)
+    await asyncio.sleep(0.1)
+    assert children(relay.proc.pid) == []
+    controls(base, b"P")
+    await until(lambda: peer.controls() == [b"s", b"P", b"P"])
+    assert peer.bookmarks() == [request]
+    await peer.restored()
+    await peer.send(wire.BOUNDARY, b"P")
+    await peer.send(wire.STATE, state())
+    await peer.send(wire.CAPTURE, (3).to_bytes(4, "big"))
+    await peer.packets(12)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+
+
+async def test_phone_pause_and_play_use_the_same_gates(contract):
+    relay, peer, base = contract
+    await peer.packets(40)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    await peer.send(wire.PAUSE_NOW)
+    await until(lambda: peer.bookmarks())
+    assert children(relay.proc.pid) == []
+    await peer.send(wire.PAUSE_NOW, b"P")
+    await until(lambda: peer.controls() == [b"s", b"P"])
+    await peer.restored()
+    await peer.send(wire.BOUNDARY, b"P")
+    await peer.send(wire.STATE, state())
+    await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
+    await peer.packets(12)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
 
 
 async def test_seek_discards_old_audio_and_metadata(contract):
@@ -380,3 +405,26 @@ async def test_crash_and_singleton(contract, tmp_path):
     await until(lambda: all(dead(pid) for pid in pids))
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock, pytest.raises(OSError):
         sock.connect(f"{base}.sock")  # firmware's spot_alive detects the crash
+
+
+async def test_pause_after_play_boundary_but_before_refill_keeps_original_bookmark(contract):
+    relay, peer, base = contract
+    await peer.send(wire.TIMELINE, state(position=1234, token=7))
+    await peer.packets(5)
+    controls(base, b"s")
+    await until(lambda: peer.bookmarks())
+    original = peer.bookmarks()[0]
+    await peer.restored()
+    controls(base, b"P")
+    await until(lambda: peer.controls() == [b"s", b"P"])
+    await peer.send(wire.BOUNDARY, b"P")
+    await peer.send(wire.STATE, state(position=1234))
+    await until(lambda: "state=playing\n" in read_state(base))
+    await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
+    await peer.packets(5)
+    controls(base, b"s")
+    await until(lambda: len(peer.bookmarks()) == 2)
+    assert peer.bookmarks() == [original, original]
+    assert "state=paused\n" in read_state(base)
+    assert "position=1234\n" in read_state(base)
+    assert children(relay.proc.pid) == []

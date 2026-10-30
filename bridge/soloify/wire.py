@@ -5,7 +5,7 @@ import asyncio
 import hmac
 import struct
 
-VERSION = 1
+VERSION = 2
 OK = b"ok %d\n" % VERSION
 # The largest frame either side accepts: a cover JPEG is the biggest
 MAX_FRAME = 1 << 20
@@ -27,6 +27,12 @@ RESET_BEGIN = b"B"  # u32 browse correlation ID, after read-only preparation suc
 CAPTURE = b"g"  # u32 generation, u16 pre-skip, optional warmup Opus packet
 AUDIO_END = b"e"  # u32 sequence and u16 valid samples for the next (final) audio packet
 
+# Version 2 pause/restore exchange. Firmware's datagrams and Q2SPOT/1 stay unchanged.
+TIMELINE = b"l"  # presentation anchor before a packet: state lines with token and position
+PAUSE_NOW = b"v"  # external pause event: request an immediate local bookmark/drop
+BOOKMARK = b"R"  # u32 correlation, then frozen timeline state; empty state means invalid
+RESTORED = b"h"  # u32 correlation, byte success (0/1), UTF-8 diagnostic
+
 _HEAD = struct.Struct(">cI")
 
 
@@ -47,7 +53,7 @@ async def read_frame(reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
 
 
 def hello_ok(line: bytes, token: str) -> bool:
-    """Whether the relay's first line is `hello 1 TOKEN` with our token, in constant time."""
+    """Whether the relay's first line is `hello 2 TOKEN` with our token, in constant time."""
     parts = line.rstrip(b"\n").split(b" ")
     return (
         len(parts) == 3

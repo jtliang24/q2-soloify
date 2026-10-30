@@ -181,6 +181,38 @@ async def test_live_laptop_endpoints_and_controls():
                     ],
                 )
         assert results["null_sink"]["verified"], "Soloist stream must be on the null sink"
+        # Confirm the real source honors the bookmark's paused seek; this does not
+        # claim to measure a physical output cursor or listening alignment.
+        await until(lambda: player.timeline.current is not None and player.state.playing)
+        await until(lambda: player.state.position() >= 2500, timeout=10)
+        position = player.state.position() - 1000
+        token = player.timeline.current.token
+        player.rewind.remember(b"\0\0\0\1" + f"token={token}\nposition={position}\n".encode())
+        uri = player.state.track.uri
+        # Advance the real source beyond the listener's saved occurrence. This
+        # exercises verified Previous/queue semantics without claiming a natural
+        # boundary or measuring a physical device's playback position.
+        assert await link.command("skip_next")
+        await until(lambda: player.state.track and player.state.track.uri != uri, timeout=10)
+        results["pause_timeline"] = [
+            {"token": item.token, "uri": item.state.track.uri, "anchor": item.state.anchor}
+            for item in player.timeline.occurrences
+        ]
+        results["pause_previous"] = (await link.request("get_queue", limit=128))["previous"]
+        await player.rewind.restore()
+        assert player.state.track.uri == uri
+        results["pause_restore"] = {
+            "verified": player.state.word == "paused",
+            "requested_ms": position,
+            "confirmed_ms": player.state.position(),
+            "hardware_measured": False,
+            "previous_track_verified": True,
+        }
+        assert results["pause_restore"]["verified"]
+        assert abs(player.state.position() - position) <= 100
+        await player.rewind.command("play")
+        player.rewind.bookmark = None
+        await until(lambda: player.state.playing)
         for mode in ("on", "off"):
             h, _ = await check("shuffle", mode, name="shuffle_" + mode)
             assert h[1] == "ok"
@@ -209,6 +241,6 @@ async def test_live_laptop_endpoints_and_controls():
             task.cancel()
         await asyncio.gather(*player.tasks, return_exceptions=True)
         await api.close()
-        out = ROOT / "build/step4-live.json"
+        out = Path(os.environ.get("SOLOIFY_LIVE_RESULTS", ROOT / "build/step4-live.json"))
         out.parent.mkdir(exist_ok=True)
         out.write_text(json.dumps(results, indent=2) + "\n")

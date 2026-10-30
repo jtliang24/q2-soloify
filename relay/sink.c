@@ -10,6 +10,95 @@
 
 static int group = -1, decoder = -1, player = -1;
 static int pcm = -1;
+/* Read the owning hardware substream, not an estimate of what the decoder accepted.
+ * The proc root override also lets host tests exercise real parsing and ownership. */
+static unsigned last_rate;
+static uint64_t last_pointer;
+static int pointer_seen, pointer_bad;
+static char hardware[256];
+
+static int proc_read(const char *path, char *buf, int cap) {
+    int fd = open(path, 0), n;
+    if (fd < 0) return 0;
+    n = read(fd, buf, cap - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    return 1;
+}
+static uint64_t proc_number(const char *buf, const char *key) {
+    int k = strlen(key);
+    if (k && key[k - 1] == ':') --k;
+    const char *p = buf;
+    uint64_t v = 0;
+    while (*p && (strncmp(p, key, k) || (p[k] != ':' && p[k] != ' ' && p[k] != '\t'))) {
+        const char *nl = strchr(p, '\n');
+        if (!nl) return 0;
+        p = nl + 1;
+    }
+    if (!*p) return 0;
+    p += k;
+    while (*p == ' ' || *p == '\t' || *p == ':') ++p;
+    while (*p >= '0' && *p <= '9') v = v * 10 + *p++ - '0';
+    return v;
+}
+int sink_rendered(uint64_t *frames, unsigned *rate) {
+    char path[256], list[8192], status[2048], params[2048];
+    const char *root = getenv("SOLOIFY_ASOUND");
+    if (!root || !*root) root = "/proc/asound";
+    if (group <= 0 || pointer_bad) return 0;
+    snprintf(path, sizeof path, "%s/pcm", root);
+    if (!proc_read(path, list, sizeof list)) return 0;
+    int found = 0;
+    uint64_t cursor = 0;
+    unsigned hz = 0;
+    char selected[256] = "";
+    for (char *line = list; line && *line;) {
+        char *end = strchr(line, '\n');
+        if (end) *end = 0;
+        char *p;
+        int card = strtol(line, &p, 10);
+        if (*p == '-') {
+            int dev = strtol(p + 1, &p, 10);
+            if (*p == ':' && strstr(p, "playback")) {
+                char *playback = strstr(p, "playback") + 8;
+                int subs = strtol(playback, NULL, 10);
+                if (subs > 32) subs = 32;
+                for (int sub = 0; sub < subs; ++sub) {
+                    snprintf(path, sizeof path, "%s/card%d/pcm%dp/sub%d/status", root, card, dev, sub);
+                    if (!proc_read(path, status, sizeof status)) continue;
+                    int owner = proc_number(status, "owner_pid:");
+                    if (!owner || getpgid(owner) != group) continue;
+                    /* XRUN, SUSPENDED and pointer resets invalidate this playback epoch. */
+                    if (!strstr(status, "state: RUNNING") && !strstr(status, "state: PREPARED")) {
+                        pointer_bad = 1;
+                        return 0;
+                    }
+                    if (!strstr(status, "hw_ptr")) return 0;
+                    cursor = proc_number(status, "hw_ptr:");
+                    snprintf(path, sizeof path, "%s/card%d/pcm%dp/sub%d/hw_params", root, card, dev, sub);
+                    if (!proc_read(path, params, sizeof params)) return 0;
+                    hz = proc_number(params, "rate:");
+                    snprintf(selected, sizeof selected, "%d/%d/%d/%d", card, dev, sub, owner);
+                    ++found;
+                }
+            }
+        }
+        line = end ? end + 1 : NULL;
+    }
+    if (found != 1 || hz < 8000 || hz > 384000) return 0;
+    if (pointer_seen && (hz != last_rate || strcmp(selected, hardware) || cursor < last_pointer)) {
+        pointer_bad = 1;
+        return 0;
+    }
+    pointer_seen = 1;
+    last_pointer = cursor;
+    last_rate = hz;
+    memcpy(hardware, selected, strlen(selected) + 1);
+    *frames = cursor;
+    *rate = hz;
+    return 1;
+}
 
 static const char *env_or(const char *name, const char *dflt) {
     const char *v = getenv(name);
@@ -40,6 +129,7 @@ static int spawn(const char *cmd, int in, int out, int pgid, int *close_fds, int
 int sink_start(void) {
     if (player > 0 && pcm >= 0) return sink_next(-1);
     if (player > 0) sink_stop();
+    pointer_seen = pointer_bad = 0;
     int a[2], b[2];
     if (pipe(a) < 0) return -1;
     if (pipe(b) < 0) {
@@ -86,11 +176,6 @@ void sink_finish(int fd) {
 }
 
 int sink_player(void) { return player > 0; }
-
-void sink_drain(void) {
-    if (pcm >= 0) close(pcm);
-    pcm = -1;
-}
 
 int sink_next(int fd) {
     int a[2];

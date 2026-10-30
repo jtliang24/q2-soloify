@@ -10,7 +10,13 @@ static int enabled, control = -1, browser = -1, lockfd = -1, online, configured;
 static char base[96], current[TEXT] = "state=none\n", upstream[TEXT] = "state=none\n";
 static char prime[TEXT]; /* position of the first audio after connect or a reset */
 static uint64_t stamped;
-static int held, commands, resetting, draining, pause_complete, fresh_wait;
+static int held, commands, resetting, fresh_wait, restore_ok = 1, pause_active;
+static unsigned pause_id;
+static char bookmark[TEXT];
+#define ANCHORS 2048 /* More than the largest ring, plus the hardware/decoder lead. */
+static struct { char text[TEXT]; uint64_t sample; } anchors[ANCHORS];
+static unsigned anchor_first, anchor_count;
+static void command(char *buf, int n);
 static struct { char text[TEXT]; uint64_t sample; } states[STATES];
 static unsigned first, count;
 static struct { char id[64]; unsigned char *data; int size; } covers[COVERS];
@@ -53,6 +59,11 @@ static int is(const char *text, const char *word) {
     return !strcmp(buf, word);
 }
 static void path(char *out, const char *suffix) { snprintf(out, 128, "%s%s", base, suffix); }
+static void clear_pause_error(void) {
+    char file[128];
+    path(file, ".pause-error");
+    unlink(file);
+}
 static int put(const char *suffix, const void *data, int n) {
     char dest[128], tmp[144];
     int fd, off = 0, r;
@@ -101,19 +112,72 @@ static uint64_t position(void) {
     if (is(current, "playing")) p += now_ms() - stamped;
     return duration && p > duration ? duration : p;
 }
+/* Snapshot before killing the sink: audio_clear deliberately forgets its clocks. */
 void q2pod_paused(void) {
-    if (!enabled || !draining) return;
-    draining = 0;
-    count = first = 0;
+    if (!enabled) return;
+    if (pause_active) { /* Repeated or rapid Pause retains the original bookmark. */
+        if (held) return;
+        held = 1;
+        restore_ok = 0;
+        fresh_wait = 1;
+        audio_enable(0);
+        if (!is(current, "paused"))
+            publish(current, "paused", *bookmark ? number(bookmark, "position") : position());
+        unsigned char request[TEXT + 4];
+        put_be32(request, pause_id);
+        int n = strlen(bookmark);
+        memcpy(request + 4, bookmark, n);
+        relay_send('R', request, n + 4); /* order a final source Pause after queued Play */
+        return;
+    }
+    pause_active = 1;
+    uint64_t sample = 0, pos = position();
+    int valid = audio_bookmark(&sample);
+    *bookmark = 0;
+    for (unsigned i = 0; valid && i < anchor_count; ++i) {
+        unsigned at = (anchor_first + i) % ANCHORS;
+        if (anchors[at].sample > sample) break;
+        memcpy(bookmark, anchors[at].text, strlen(anchors[at].text) + 1);
+        pos = number(bookmark, "position") + sample - anchors[at].sample;
+    }
+    if (valid && !*bookmark && !audio_received() && *prime && number(prime, "token")) {
+        memcpy(bookmark, prime, strlen(prime) + 1);
+        pos = number(prime, "position");
+    }
+    if (*bookmark && !number(bookmark, "token")) {
+        *bookmark = 0;
+        pos = position();
+    }
+    char frozen[TEXT];
+    snprintf(frozen, sizeof frozen, "%s", *bookmark ? bookmark : current);
+    if (*bookmark) {
+        /* Send only the identity and exact position. The bridge owns immutable track/context
+         * records, so the device never asks it to play an arbitrary supplied URI. */
+        snprintf(bookmark, sizeof bookmark, "token=%llu\nposition=%llu\n",
+                 (unsigned long long)number(frozen, "token"), (unsigned long long)pos);
+    }
+    held = 1;
+    restore_ok = 0;
+    fresh_wait = 1;
+    ++pause_id;
+    if (!pause_id) ++pause_id;
+    audio_pause();
+    count = first = anchor_count = anchor_first = 0;
     *prime = 0;
-    uint64_t pos = is(upstream, "paused") ? number(upstream, "position") : position();
-    publish(is(upstream, "paused") ? upstream : current, "paused", pos);
-    relay_send('A', "0 pause", 7);
+    publish(frozen, "paused", pos);
+    unsigned char request[TEXT + 4];
+    put_be32(request, pause_id);
+    int n = strlen(bookmark);
+    memcpy(request + 4, bookmark, n);
+    relay_send('R', request, n + 4);
+    say("pause bookmark id=%u valid=%d position=%llu", pause_id, n != 0,
+        (unsigned long long)pos);
 }
 void q2pod_capture(void) {
     if (q2pod_ready()) fresh_wait = 0;
 }
 void q2pod_started(void) {
+    if (enabled && !held && !resetting) pause_active = 0;
     if (enabled && *prime && !held && !resetting) {
         publish(prime, "playing", number(prime, "position"));
         *prime = 0;
@@ -166,34 +230,43 @@ void q2pod_config(int valid) { configured = valid; }
 void q2pod_link(int up) {
     online = up;
     commands = resetting = 0;
-    if (!up && draining) audio_pause_end();
+
     if (!up) for (int i = 0; i < CLIENTS; ++i)
         if (clients[i].fd >= 0 && clients[i].waiting)
             local_reply(i, "offline", "Bridge disconnected; Retry to reconnect");
     if (enabled && up && held) {
-        if (!relay_send('c', "s", 1)) ++commands;
+        unsigned char request[TEXT + 4];
+        put_be32(request, pause_id);
+        int n = strlen(bookmark);
+        memcpy(request + 4, bookmark, n);
+        relay_send('R', request, n + 4);
         relay_send('A', "0 pause", 7);
     }
 }
-int q2pod_wants(void) { return !enabled || (!held && !resetting && is(upstream, "playing")); }
-int q2pod_audio(void) { return !enabled || (!resetting && !fresh_wait && (!held || draining)); }
+int q2pod_wants(void) { return !enabled || (!held && restore_ok && !resetting && is(upstream, "playing")); }
+int q2pod_audio(void) { return !enabled || (!resetting && restore_ok && !fresh_wait && !held); }
 int q2pod_ready(void) { return !enabled || (!commands && q2pod_wants()); }
 static void command(char *buf, int n) {
     int reset = buf[0] == 'n' || buf[0] == 'b' || buf[0] == 'S';
-    if (buf[0] == 'p') buf[0] = held || !is(current, "playing") ? 'P' : 's';
+    if (buf[0] == 'p')
+        buf[0] = held || (!commands && !restore_ok) ||
+                 (!pause_active && !is(current, "playing")) ? 'P' : 's';
     if (buf[0] == 's') {
-        held = 1;
-        pause_complete = 0;
-        draining = 1;
-        audio_pause();
+        q2pod_paused();
+        return;
     } else if (buf[0] == 'P') {
-        held = draining = pause_complete = 0;
+        held = 0;
         fresh_wait = 1;
         audio_clear();
-        publish(current, "playing", position());
+        count = first = anchor_count = anchor_first = 0;
+        *prime = 0;
     } else if (reset) {
-        draining = pause_complete = 0;
-        count = first = 0;
+        restore_ok = 1;
+        clear_pause_error();
+        pause_id = pause_active = 0;
+        *bookmark = 0;
+        held = 0;
+        count = first = anchor_count = anchor_first = 0;
         *prime = 0;
         audio_clear();
     } else return;
@@ -204,7 +277,33 @@ static void command(char *buf, int n) {
 }
 void q2pod_frame(int type, const unsigned char *p, int n) {
     if (!enabled) return;
-    if (type == 'r' && n > 4 && n <= 65540) {
+    if (type == 'v' && n == 0) {
+        q2pod_paused();
+    } else if (type == 'v' && n == 1 && p[0] == 'P') {
+        /* The phone's Play goes through the same local fresh-capture gate. */
+        char play = 'P';
+        command(&play, 1);
+    } else if (type == 'h' && n >= 5) {
+        if (!pause_id || be32(p) != pause_id) return;
+        restore_ok = p[4] == 1;
+        if (!restore_ok) {
+            publish(current, "paused", number(current, "position"));
+            int len = n - 5 > 512 ? 512 : n - 5;
+            put(".pause-error", p + 5, len);
+            say("pause restore failed id=%u: %.*s", pause_id, len, p + 5);
+        } else {
+            clear_pause_error();
+            say("pause restore ready id=%u", pause_id);
+        }
+    } else if (type == 'l' && n > 0 && n < TEXT && !memchr(p, 0, n)) {
+        if (!q2pod_audio()) return;
+        if (anchor_count == ANCHORS) anchor_first = (anchor_first + 1) % ANCHORS, --anchor_count;
+        unsigned at = (anchor_first + anchor_count++) % ANCHORS;
+        memcpy(anchors[at].text, p, n);
+        anchors[at].text[n] = 0;
+        anchors[at].sample = audio_received();
+        if (number(anchors[at].text, "token")) count = first = 0;
+    } else if (type == 'r' && n > 4 && n <= 65540) {
         unsigned id = be32(p);
         for (int i = 0; i < CLIENTS; ++i) {
             if (clients[i].fd < 0 || !clients[i].waiting || clients[i].correlation != id) continue;
@@ -223,7 +322,12 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
         /* The bridge has finished read-only preparation. A client may already have
          * timed out: the mutation still needs its boundary, independently of its slot. */
         say("reset begin browse=%u", be32(p));
-        held = draining = pause_complete = fresh_wait = 0;
+        held = fresh_wait = 0;
+        restore_ok = 1;
+        clear_pause_error();
+        pause_id = pause_active = 0;
+        *bookmark = 0;
+        anchor_count = anchor_first = 0;
         count = first = 0;
         *prime = 0;
         audio_clear();
@@ -232,10 +336,6 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
         say("boundary op=%c pending=%d commands=%d", n ? p[0] : '?', resetting, commands);
         if (n && (p[0] == 's' || p[0] == 'P')) {
             if (commands) --commands;
-            if (p[0] == 's') {
-                pause_complete = 1;
-                if (draining) audio_pause_end();
-            }
         } else {
             if (resetting) --resetting;
             count = first = 0;
@@ -254,19 +354,18 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
         if (strcmp(word, "playing")) {
             if (commands) return;
             if (!strcmp(word, "paused")) {
-                char before[64], after[64];
-                value(current, "track", before, sizeof before);
-                value(text, "track", after, sizeof after);
-                held = 1;
-                if (is(current, "playing")) {
-                    draining = 1;
-                    audio_pause();
-                    if (pause_complete) audio_pause_end();
-                }
-                else if (!count && (!is(current, "paused") || (!audio_received() && strcmp(before, after))))
+                if (!held && !pause_active && (is(current, "playing") || audio_received()))
+                    q2pod_paused();
+                if (!held && restore_ok && !commands) {
+                    held = 1;
                     publish(text, word, number(text, "position"));
+                }
             } else {
-                held = draining = pause_complete = fresh_wait = 0;
+                held = fresh_wait = 0;
+                restore_ok = 1;
+                pause_id = pause_active = 0;
+                *bookmark = 0;
+                anchor_count = anchor_first = 0;
                 relay_send('A', "0 pause", 7);
                 count = first = 0;
                 *prime = 0;
@@ -274,13 +373,8 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
                 publish(text, word, number(text, "position"));
             }
         } else {
-            if (!commands && (draining || is(current, "paused"))) {
-                draining = 0;
-                fresh_wait = 1;
-                audio_clear();
-            }
-            pause_complete = 0;
-            if (!commands) held = 0;
+            if (held || !restore_ok) return;
+            if (anchor_count && number(anchors[anchor_first].text, "token")) return;
             if (count == STATES) first = (first + 1) % STATES, --count;
             unsigned at = (first + count++) % STATES;
             memcpy(states[at].text, text, n + 1);
@@ -407,7 +501,26 @@ void q2pod_tick(void) {
         }
         if (valid && n < 63) command(buf, n);
     }
-    while (count && (!held || draining) && !resetting && audio_played() >= states[first].sample) {
+    uint64_t rendered;
+    if (anchor_count && !held && !resetting && audio_bookmark(&rendered)) {
+        unsigned at = anchor_first;
+        int found = 0;
+        for (unsigned i = 0; i < anchor_count; ++i) {
+            unsigned next = (anchor_first + i) % ANCHORS;
+            if (anchors[next].sample > rendered) break;
+            at = next;
+            found = 1;
+        }
+        if (found && sink_player()) {
+            char old[64], fresh[64];
+            value(current, "track", old, sizeof old);
+            value(anchors[at].text, "track", fresh, sizeof fresh);
+            if (number(anchors[at].text, "token") && strcmp(old, fresh))
+                publish(anchors[at].text, "playing", number(anchors[at].text, "position")
+                        + rendered - anchors[at].sample);
+        }
+    }
+    while (count && !held && !resetting && audio_played() >= states[first].sample) {
         char *text = states[first].text;
         uint64_t pos = number(text, "position");
         if (*prime) pos = pos > (unsigned)audio_target() ? pos - audio_target() : 0;
@@ -420,7 +533,7 @@ void q2pod_tick(void) {
 void q2pod_stop(void) {
     if (!enabled) return;
     audio_enable(0);
-    const char *suffixes[] = {".sock", ".browse.sock", ".state", ".state.jpg"};
+    const char *suffixes[] = {".sock", ".browse.sock", ".state", ".state.jpg", ".pause-error"};
     char file[128];
     for (unsigned i = 0; i < sizeof suffixes / sizeof *suffixes; ++i) {
         path(file, suffixes[i]);

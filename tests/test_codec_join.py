@@ -102,15 +102,16 @@ async def check_codec_join(tmp_path, warmup, binary=None, decode=DECODE, shell=N
                         await peer.send(wire.STATE, state(word="paused"))
                         await until(lambda: "state=paused\n" in read_state(base))
                         assert children(relay.proc.pid) == []
-                        assert abs(pcm.stat().st_size // 4 - 44100) <= 2
+                        assert 0 < pcm.stat().st_size // 4 < 44100
                         controls(base, b"P")
                         await until(lambda: peer.controls() == [b"s", b"P"])
+                        await peer.restored()
                         await peer.send(wire.BOUNDARY, b"P")
                         await peer.send(wire.STATE, state())
                         await asyncio.sleep(0.3)  # resume waits for fresh capture
                         assert children(relay.proc.pid) == []
             if paused:
-                # Initial playback drained fully; resume starts only the fresh encoder.
+                # Initial playback was discarded; resume starts only the fresh encoder.
                 for _ in range(2):
                     await relay.expect("decoder gen=")
                 await until(lambda: bool(players()))

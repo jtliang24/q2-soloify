@@ -136,6 +136,10 @@ async def test_external_resume_waits_for_new_capture(contract):
     await peer.send(wire.STATE, state(word="paused"))
     await peer.send(wire.BOUNDARY, b"s")  # external pause capture has drained
     await until(lambda: not children(relay.proc.pid))
+    await peer.send(wire.PAUSE_NOW, b"P")
+    await until(lambda: peer.controls() == [b"s", b"P"])
+    await peer.restored()
+    await peer.send(wire.BOUNDARY, b"P")
     await peer.send(wire.STATE, state())
     await asyncio.sleep(0.35)
     assert children(relay.proc.pid) == []
@@ -434,15 +438,16 @@ async def test_external_resume_starts_capture_without_waiting_for_periodic_probe
         await rig.send(wire.CONTROL, b"s")
         rig.session.player.event({"type": "playback_changed", "status": "playing"})
         await _settle()
+        # A bare c s has no hardware bookmark; real device pause uses R instead.
         assert len(rig.encoders) == 2 and rig.session.streaming
-        assert rig.soloist.calls == [("pause",)]  # the external Play is not duplicated
+        assert rig.soloist.calls == [("pause",)]
     finally:
         rig.task.cancel()
         await asyncio.gather(rig.task, return_exceptions=True)
 
 
 @pytest.mark.parametrize("external", [False, True])
-async def test_pause_completion_follows_capture_tail_once(external):
+async def test_pause_stops_capture_and_phone_requests_immediate_bookmark(external):
     rig = Rig(limit=1000)
     recorded = []
     write = rig.writer.write
@@ -469,8 +474,15 @@ async def test_pause_completion_follows_capture_tail_once(external):
         await until(lambda: encoder.stopped)
         await _settle()
         boundary = wire.frame(wire.BOUNDARY, b"s")
-        assert recorded.count(boundary) == 1
-        assert recorded.index(wire.audio(0, b"pause-fade")) < recorded.index(boundary)
+        if external:
+            assert wire.frame(wire.PAUSE_NOW) in recorded
+            assert recorded.index(wire.frame(wire.PAUSE_NOW)) < recorded.index(
+                wire.audio(0, b"pause-fade")
+            )
+            assert boundary not in recorded  # completion comes from the bookmark restore
+        else:
+            assert recorded.count(boundary) == 1
+            assert recorded.index(wire.audio(0, b"pause-fade")) < recorded.index(boundary)
         assert not rig.session.streaming
     finally:
         rig.task.cancel()

@@ -20,7 +20,7 @@ class FakeRelay:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         self.reader, self.writer = await asyncio.open_connection("127.0.0.1", port, ssl=ctx)
-        self.writer.write(b"hello 1 %s\n" % token.encode())
+        self.writer.write(b"hello 2 %s\n" % token.encode())
         assert await self.reader.readline() == wire.OK
         return self
 

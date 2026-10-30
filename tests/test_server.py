@@ -18,10 +18,10 @@ def test_identity_is_made_once_and_private(tmp_path):
 
 
 def test_hello():
-    assert wire.hello_ok(b"hello 1 abc\n", "abc")
-    assert not wire.hello_ok(b"hello 1 abd\n", "abc")
-    assert not wire.hello_ok(b"hello 2 abc\n", "abc")
-    assert not wire.hello_ok(b"hello 1 abc extra\n", "abc")
+    assert wire.hello_ok(b"hello 2 abc\n", "abc")
+    assert not wire.hello_ok(b"hello 2 abd\n", "abc")
+    assert not wire.hello_ok(b"hello 1 abc\n", "abc")
+    assert not wire.hello_ok(b"hello 2 abc extra\n", "abc")
 
 
 async def test_frame_round_trip():
@@ -75,7 +75,7 @@ async def test_good_hello_gets_ok_and_session(tmp_path):
     identity, listener, port = await _start(tmp_path, session)
     async with listener:
         reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=_client())
-        writer.write(b"hello 1 %s\n" % identity.token.encode() + wire.frame(wire.STATS, b"hi"))
+        writer.write(b"hello 2 %s\n" % identity.token.encode() + wire.frame(wire.STATS, b"hi"))
         assert await reader.readline() == wire.OK
         assert await asyncio.wait_for(got.get(), 5) == (wire.STATS, b"hi")
         writer.close()
@@ -88,7 +88,7 @@ async def test_bad_token_closes(tmp_path):
     _, listener, port = await _start(tmp_path, session)
     async with listener:
         reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=_client())
-        writer.write(b"hello 1 wrong\n")
+        writer.write(b"hello 2 wrong\n")
         assert await asyncio.wait_for(reader.read(), 5) == b""
         writer.close()
 
@@ -98,7 +98,7 @@ async def test_new_relay_replaces_the_old(tmp_path):
         await asyncio.sleep(3600)
 
     identity, listener, port = await _start(tmp_path, session)
-    hello = b"hello 1 %s\n" % identity.token.encode()
+    hello = b"hello 2 %s\n" % identity.token.encode()
     async with listener:
         old_r, old_w = await asyncio.open_connection("127.0.0.1", port, ssl=_client())
         old_w.write(hello)

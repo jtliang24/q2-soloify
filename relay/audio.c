@@ -1,5 +1,5 @@
 /* The relay's bounded Opus queue. Encoder generations are decoded separately into the SAME
- * PCM player. Their padding and warmup are trimmed; pause drains before releasing ALSA. */
+ * PCM player. Their padding and warmup are trimmed; explicit pause drops the output immediately. */
 #include "relay.h"
 #define SLOTS 1536
 #define SLOT_BYTES 1276
@@ -25,8 +25,8 @@ static struct ogg ogg;
 static uint64_t idle_since, over_since, fed_since, fed_samples, buffered, received;
 static unsigned underruns, trims, drops, sinks;
 static int enabled = 1, fresh_required, fresh_capture;
-static int draining, drain_end, drain_finishing;
-static uint64_t drain_until;
+static uint64_t rendered_base;
+static int rendered_started, rendered_invalid;
 
 /* The freestanding MIPS link has no 64-bit division runtime. The ring fits 32 bits;
  * cumulative sample clocks use two 32-bit words and a bounded long division. */
@@ -48,6 +48,7 @@ static void pop(void) {
 static void trim(const char *why) {
     int from = level_ms();
     while (count && level_ms() > target) pop();
+    if (rendered_started) rendered_invalid = 1;
     ++trims;
     say("trimmed %d ms to %d (%s)", from, target, why);
 }
@@ -57,6 +58,7 @@ static void stop_sink(void) {
     sink_stop();
     fd = -1, feeding = npage = off = ending = 0;
     active_gen = 0;
+    if (rendered_started) rendered_invalid = 1;
 }
 
 /* Decode genuine history rather than restarting predictive Opus state on an arbitrary
@@ -101,12 +103,15 @@ static int decoder_for_head(void) {
     return 1;
 }
 static void start_feeding(void) {
-    if (!enabled || (!draining && (fresh_required || !q2pod_ready())) || !count) return;
-    if (!draining && level_ms() > target + TRIM_OVER_MS) trim("backlog");
+    if (!enabled || (fresh_required || !q2pod_ready()) || !count) return;
+    if (level_ms() > target + TRIM_OVER_MS) trim("backlog");
     if (fd < 0) {
         int existed = sink_player();
         if ((fd = sink_start()) < 0) { say("can't start the sink"); return; }
         if (!existed) {
+            rendered_base = received - buffered;
+            rendered_started = 1;
+            rendered_invalid = 0;
             ++sinks;
             say("sink start buffered_ms=%d target_ms=%d", level_ms(), target);
         }
@@ -147,7 +152,7 @@ void audio_packet(const unsigned char *p, int n, unsigned seq) {
     input_skip -= skipped;
     /* Fully skipped packets still carry the decoder history preceding the first audible
      * sample. Keep them with zero ring duration; Opus pre-skip removes their PCM. */
-    if (count == SLOTS) pop(), ++drops;
+    if (count == SLOTS) pop(), ++drops, rendered_invalid = 1;
     int i = (head + count) % SLOTS;
     free(prefixes[i]);
     prefixes[i] = NULL;
@@ -184,7 +189,7 @@ void audio_service(short revents) {
             }
             if (!count) {
                 feeding = 0, idle_since = now_ms();
-                if (!draining) ++underruns;
+                ++underruns;
                 return;
             }
             if (ahead()) return;
@@ -208,29 +213,11 @@ void audio_service(short revents) {
 }
 void audio_tick(void) {
     uint64_t now = now_ms();
-    if (draining) {
-        int done = 0;
-        if (sink_player() && sink_exited()) {
-            done = drain_finishing;
-            stop_sink();
-        }
-        if (!feeding && count) start_feeding(); /* drain even a partial startup buffer */
-        if (!count && !feeding && !drain_finishing &&
-            (drain_end || (!sink_player() && !received))) {
-            sink_finish(fd);
-            fd = -1, active_gen = 0;
-            sink_drain();
-            drain_finishing = 1;
-            drain_until = now_ms() + 2000;
-        }
-        if (done || (drain_finishing && !sink_player()) || now >= drain_until) {
-            if (now >= drain_until) say("pause drainage deadline buffered_ms=%d", level_ms());
-            audio_clear();
-            q2pod_paused();
-        }
-        if (feeding && fd < 0 && count && !ahead()) audio_service(0);
-        return;
-    }
+    uint64_t cursor;
+    unsigned hz;
+    /* Observe resets/XRUNs between controls. Missing startup proc entries are allowed;
+     * bookmarking itself still requires a successful hardware read. */
+    if (rendered_started && sink_player()) sink_rendered(&cursor, &hz);
     if (sink_player() && sink_exited()) { say("the sink exited"); stop_sink(); }
     if (sink_player() && !feeding && now - idle_since > SINK_IDLE_MS) stop_sink();
     if (feeding && level_ms() > target + TRIM_OVER_MS) {
@@ -246,19 +233,35 @@ void audio_enable(int on) {
     if (!on) audio_clear();
 }
 void audio_pause(void) {
-    if (draining) return;
-    draining = 1, drain_end = drain_finishing = 0;
-    drain_until = now_ms() + level_ms() + 6000;
-    say("pause drain buffered_ms=%d", level_ms());
+    say("pause drop buffered_ms=%d", level_ms());
+    audio_enable(0);
 }
-void audio_pause_end(void) {
-    if (draining) drain_end = 1;
+int audio_bookmark(uint64_t *sample) {
+    if (!rendered_started) {
+        *sample = sample_ms(received - buffered);
+        return 1; /* Partial startup: the first pending presentation sample. */
+    }
+    uint64_t frames;
+    unsigned hz;
+    if (rendered_invalid || !sink_rendered(&frames, &hz)) return 0;
+    /* Avoid a compiler runtime for 64-bit division on the stock MIPS link. */
+    uint64_t ms = 0, rem = 0;
+    for (int bit = 63; bit >= 0; --bit) {
+        rem = rem * 2 + ((frames >> bit) & 1);
+        ms <<= 1;
+        if (rem >= hz) rem -= hz, ms |= 1;
+    }
+    ms = ms * 1000 + (unsigned)rem * 1000 / hz;
+    *sample = sample_ms(rendered_base) + ms;
+    if (*sample > audio_received()) return 0;
+    return 1;
 }
 void audio_clear(void) {
     stop_sink();
     head = count = 0;
     received = buffered = fed_samples = over_since = 0;
-    draining = drain_end = drain_finishing = 0;
+    rendered_base = 0;
+    rendered_started = rendered_invalid = 0;
     for (int i = 0; i < SLOTS; ++i) {
         free(prefixes[i]); prefixes[i] = NULL;
         lens[i] = 0;
