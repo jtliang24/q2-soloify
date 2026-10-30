@@ -66,7 +66,7 @@ docs/         setup per OS, wire spec, troubleshooting
 - `.soloify/remote`: one endpoint per line, `HOST PORT TOKEN [sha256=HEX] [buffer=MS]`, tried in order (LAN address first, then WAN), each with a short connect timeout. With `sha256=`, the relay pins the server's leaf certificate. Without it, the relay checks the name and the CA bundle.
 - **Delay and bitrate are the user's settings** (decided 2026-10-27, after step 1): the buffer target defaults to 1 s on the LAN and 4 s beyond it, and the bitrate to 160 kbit/s. A longer target means fewer dropouts on spotty Wi-Fi for more delay (step 1 measured the delay at the target or up to half a second more). Until the settings UI (section 5), `buffer=` and `soloify serve --bitrate` set them.
 - No `remote` file: the browse socket answers `error` with the message "Copy remote to .soloify (see the Soloify guide)", and Retry re-reads the file.
-- Explicit pause drains queued audio and the source fade, then reaps the sink before writing `paused`; resume starts fresh (user decision, 2026-10-30). Stop/deactivation still release the sink immediately. Keep one buffer on the device and pause Soloist after a stall longer than the buffer.
+- Explicit pause now drops output immediately, restores Soloist to the hardware-measured heard position and resumes with fresh capture (revised user decision, 2026-10-30). Startup Pause cancels buffering and preserves the first pending sample. See [implementation/runbook](docs/pause-rewind.md); physical validation is pending. The earlier drain-on-pause results below are historical. Stop/deactivation still release the sink immediately. Keep one buffer on the device and pause Soloist after a stall longer than the buffer.
 
 ## 3. Bridge (server)
 
@@ -138,6 +138,6 @@ Test and commit after each item. One device flash with a checklist at the end: s
 ## Verification (end to end)
 
 - Server: `soloify serve` on NixOS, then `soloify remote --lan … --wan …` → `.soloify/remote` on the card.
-- Device: Apps → Soloify → Install; Streaming → Soloify → menu loads (`account` ok); a playlist track plays in context; Now Playing shows art and position; pause drains the buffer before releasing ALSA; resume starts fresh; skip and seek take about one buffer; hold Play/Pause adds to the queue; Stop Streaming Services stops it; opening Spotify stops Soloify and the other way round.
+- Device: Apps → Soloify → Install; Streaming → Soloify → menu loads (`account` ok); a playlist track plays in context; Now Playing shows art and position; pause immediately releases ALSA and restores the heard bookmark; resume refills fresh (M1 revalidation pending); skip and seek take about one buffer; hold Play/Pause adds to the queue; Stop Streaming Services stops it; opening Spotify stops Soloify and the other way round.
 - Off home Wi-Fi: on the phone's hotspot through the WAN endpoint, with stall and recovery as in step 1.
 - Gates: q2-pod's M1 suites, `test/q2compare.py` (Q2 byte-identical), `test/m1plus/ports.py`, and this repo's unit tests for the relay and bridge (a fake relay, a fake Web API, a fake Soloist WebSocket).

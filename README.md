@@ -2,7 +2,7 @@
 
 Soloify plays Spotify on Q2 Pod devices (Shanling Q2, M1 Plus) through Spotify's own [Soloist](https://developer.spotify.com/documentation/soloist), for accounts librespot can't play. Soloist runs on a computer at home; the bridge here sends its audio to a relay on the device's card. See [PLAN.md](PLAN.md). The bridge and relay now carry audio, state, covers and controls (PLAN.md's steps 1–3). The relay works through the existing Spotify page, including library browsing, search, queue and playback settings. [Step 4](docs/step4.md) records laptop validation, live Spotify checks and the completed M1 pass. The [reliability follow-up](docs/step4-followup.md) passes 150 tests and a clean 30-minute M1 playback/browsing run; the search firmware fix is prepared for step 5. The [M1 runbook](docs/step4-runbook.md) covers repeat validation. [Step 3](docs/step3.md) records the M1 checks and the remaining firmware UI coverage.
 
-Pause finishes the queued audio before stopping, so allow roughly the selected buffer duration plus the source/output tail. Resume starts fresh; this avoids a delayed fade after audio restarts.
+Pause stops output immediately and rewinds Soloist to the last heard position. Resume refills a fresh buffer from that bookmark. Before output starts, Pause cancels buffering and preserves the opening. Deploy the version-2 bridge and relay together. [Implementation and M1 validation runbook](docs/pause-rewind.md); physical headphone/USB checks are pending.
 
 Spotify's terms forbid redistributing Soloist, so this repo never holds it. Each machine fetches its own build, and each user makes their own API key (with Spotify Premium). `.gitignore` keeps `soloist_release_*` and `*.key` out of git.
 

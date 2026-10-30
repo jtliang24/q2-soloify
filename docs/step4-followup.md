@@ -1,5 +1,7 @@
 # Step 4 follow-up: reliability results
 
+**Policy update (2026-10-30):** the drain-on-pause implementation/results below are historical. [Immediate pause and rewind](pause-rewind.md) supersedes that policy; its M1 validation is pending.
+
 ## Completed 2026-10-30
 
 The user confirmed clean hardware and Spotify Connect resumes at both the
