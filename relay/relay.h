@@ -82,6 +82,8 @@ void audio_tick(void);
 void audio_enable(int enabled); /* stop/reap and clear, or enable fresh capture */
 void audio_pause(void);
 int audio_bookmark(uint64_t *sample); /* hardware presentation sample clock, in ms */
+const char *audio_clock_reason(void);
+const char *sink_clock_reason(void);
 void audio_capture(unsigned generation, unsigned skip, const unsigned char *primer, int n);
 void audio_end(unsigned seq, unsigned samples);
 void audio_clear(void); /* a seek/skip: stop and discard everything */

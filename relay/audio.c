@@ -27,6 +27,8 @@ static unsigned underruns, trims, drops, sinks;
 static int enabled = 1, fresh_required, fresh_capture;
 static uint64_t rendered_base;
 static int rendered_started, rendered_invalid;
+static const char *bookmark_reason = "startup";
+const char *audio_clock_reason(void) { return bookmark_reason; }
 
 /* The freestanding MIPS link has no 64-bit division runtime. The ring fits 32 bits;
  * cumulative sample clocks use two 32-bit words and a bounded long division. */
@@ -129,6 +131,8 @@ void audio_start(int target_ms) {
     target = target_ms;
 }
 void audio_capture(unsigned generation, unsigned skip, const unsigned char *warmup, int n) {
+    say("presentation capture=%u decoder=%u received_ms=%llu skip=%u warmup=%d epoch=%u",
+        generation, stream_serial + 1, (unsigned long long)sample_ms(received), skip, n, sinks);
     /* Bridge generation numbers restart on reconnect; buffered stream identities must not. */
     if (!++stream_serial) ++stream_serial;
     input_gen = stream_serial;
@@ -237,13 +241,15 @@ void audio_pause(void) {
     audio_enable(0);
 }
 int audio_bookmark(uint64_t *sample) {
+    bookmark_reason = "valid";
     if (!rendered_started) {
         *sample = sample_ms(received - buffered);
         return 1; /* Partial startup: the first pending presentation sample. */
     }
     uint64_t frames;
     unsigned hz;
-    if (rendered_invalid || !sink_rendered(&frames, &hz)) return 0;
+    if (rendered_invalid) { bookmark_reason = "discarded presentation samples"; return 0; }
+    if (!sink_rendered(&frames, &hz)) { bookmark_reason = sink_clock_reason(); return 0; }
     /* Avoid a compiler runtime for 64-bit division on the stock MIPS link. */
     uint64_t ms = 0, rem = 0;
     for (int bit = 63; bit >= 0; --bit) {
@@ -253,7 +259,7 @@ int audio_bookmark(uint64_t *sample) {
     }
     ms = ms * 1000 + (unsigned)rem * 1000 / hz;
     *sample = sample_ms(rendered_base) + ms;
-    if (*sample > audio_received()) return 0;
+    if (*sample > audio_received()) { bookmark_reason = "pointer beyond capture timeline"; return 0; }
     return 1;
 }
 void audio_clear(void) {

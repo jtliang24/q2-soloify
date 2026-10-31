@@ -16,6 +16,17 @@ static unsigned last_rate;
 static uint64_t last_pointer;
 static int pointer_seen, pointer_bad;
 static char hardware[256];
+static const char *clock_reason = "unavailable hardware";
+
+const char *sink_clock_reason(void) { return clock_reason; }
+static int clock_fail(const char *reason, int fatal) {
+    if (strcmp(clock_reason, reason))
+        say("hardware clock reason=%s group=%d hardware=%s pointer=%llu rate=%u established=%d",
+            reason, group, hardware, (unsigned long long)last_pointer, last_rate, pointer_seen);
+    clock_reason = reason;
+    if (fatal) pointer_bad = 1;
+    return 0;
+}
 
 static int proc_read(const char *path, char *buf, int cap) {
     int fd = open(path, 0), n;
@@ -46,10 +57,12 @@ int sink_rendered(uint64_t *frames, unsigned *rate) {
     char path[256], list[8192], status[2048], params[2048];
     const char *root = getenv("SOLOIFY_ASOUND");
     if (!root || !*root) root = "/proc/asound";
-    if (group <= 0 || pointer_bad) return 0;
+    if (pointer_bad) return 0;
+    if (group <= 0) return clock_fail("unavailable hardware", 0);
     snprintf(path, sizeof path, "%s/pcm", root);
-    if (!proc_read(path, list, sizeof list)) return 0;
+    if (!proc_read(path, list, sizeof list)) return clock_fail("unavailable hardware", pointer_seen);
     int found = 0;
+    int other_owner = 0;
     uint64_t cursor = 0;
     unsigned hz = 0;
     char selected[256] = "";
@@ -68,16 +81,20 @@ int sink_rendered(uint64_t *frames, unsigned *rate) {
                     snprintf(path, sizeof path, "%s/card%d/pcm%dp/sub%d/status", root, card, dev, sub);
                     if (!proc_read(path, status, sizeof status)) continue;
                     int owner = proc_number(status, "owner_pid:");
-                    if (!owner || getpgid(owner) != group) continue;
+                    if (!owner || getpgid(owner) != group) { other_owner |= owner != 0; continue; }
+                    /* OPEN/SETUP/PREPARED are normal before the first running hardware epoch.
+                     * They must never poison its later clock, or be accepted after it. */
+                    if (strstr(status, "state: OPEN") || strstr(status, "state: SETUP") ||
+                        strstr(status, "state: PREPARED"))
+                        return clock_fail(pointer_seen ? "hardware reset" : "startup state", pointer_seen);
                     /* XRUN, SUSPENDED and pointer resets invalidate this playback epoch. */
-                    if (!strstr(status, "state: RUNNING") && !strstr(status, "state: PREPARED")) {
-                        pointer_bad = 1;
-                        return 0;
+                    if (!strstr(status, "state: RUNNING")) {
+                        return clock_fail("XRUN or suspended hardware", 1);
                     }
-                    if (!strstr(status, "hw_ptr")) return 0;
+                    if (!strstr(status, "hw_ptr")) return clock_fail("missing hardware pointer", pointer_seen);
                     cursor = proc_number(status, "hw_ptr:");
                     snprintf(path, sizeof path, "%s/card%d/pcm%dp/sub%d/hw_params", root, card, dev, sub);
-                    if (!proc_read(path, params, sizeof params)) return 0;
+                    if (!proc_read(path, params, sizeof params)) return clock_fail("unavailable hardware rate", pointer_seen);
                     hz = proc_number(params, "rate:");
                     snprintf(selected, sizeof selected, "%d/%d/%d/%d", card, dev, sub, owner);
                     ++found;
@@ -86,17 +103,24 @@ int sink_rendered(uint64_t *frames, unsigned *rate) {
         }
         line = end ? end + 1 : NULL;
     }
-    if (found != 1 || hz < 8000 || hz > 384000) return 0;
+    if (!found) return clock_fail(other_owner ? "ownership mismatch" : "unavailable hardware", pointer_seen);
+    if (found != 1) return clock_fail("ambiguous hardware owners", 1);
+    if (hz < 8000 || hz > 384000) return clock_fail("invalid hardware rate", pointer_seen);
     if (pointer_seen && (hz != last_rate || strcmp(selected, hardware) || cursor < last_pointer)) {
-        pointer_bad = 1;
-        return 0;
+        say("hardware changed group=%d selected=%s pointer=%llu rate=%u", group, selected,
+            (unsigned long long)cursor, hz);
+        return clock_fail("hardware reset or rate/owner change", 1);
     }
+    if (!pointer_seen)
+        say("hardware established group=%d owner=%s pointer=%llu rate=%u", group, selected,
+            (unsigned long long)cursor, hz);
     pointer_seen = 1;
     last_pointer = cursor;
     last_rate = hz;
     memcpy(hardware, selected, strlen(selected) + 1);
     *frames = cursor;
     *rate = hz;
+    clock_reason = "valid";
     return 1;
 }
 
@@ -130,6 +154,9 @@ int sink_start(void) {
     if (player > 0 && pcm >= 0) return sink_next(-1);
     if (player > 0) sink_stop();
     pointer_seen = pointer_bad = 0;
+    last_pointer = last_rate = 0;
+    *hardware = 0;
+    clock_reason = "startup state";
     int a[2], b[2];
     if (pipe(a) < 0) return -1;
     if (pipe(b) < 0) {

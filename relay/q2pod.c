@@ -148,6 +148,10 @@ void q2pod_paused(void) {
         *bookmark = 0;
         pos = position();
     }
+    say("bookmark clock valid=%d reason=%s capture=%llu sample=%llu token=%llu anchors=%u",
+        valid, valid ? (*bookmark ? "valid" : "missing timeline anchor") : audio_clock_reason(),
+        (unsigned long long)audio_received(), (unsigned long long)sample,
+        (unsigned long long)number(bookmark, "token"), anchor_count);
     char frozen[TEXT];
     snprintf(frozen, sizeof frozen, "%s", *bookmark ? bookmark : current);
     if (*bookmark) {
