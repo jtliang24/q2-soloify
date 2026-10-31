@@ -5,6 +5,10 @@ failures** (see results below). The full matrix remains incomplete. This replace
 explicit drain-on-pause policy in [step4-followup.md](step4-followup.md). Those
 older listening results remain evidence for that implementation, not this one.
 
+The [2026-10-31 follow-up](pause-rewind-followup.md) records subsequent fixes,
+regression results, partial M1 retesting, verified restoration and the remaining work.
+The historical results below are preserved.
+
 Pause snapshots the hardware playback cursor, kills/reaps the decoder and output
 process group, discards the ring and pending metadata, and publishes a frozen
 paused position. It does not wait for the buffer or Soloist's pause fade. The
