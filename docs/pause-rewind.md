@@ -1,6 +1,7 @@
 # Immediate pause and rewind
 
-Implemented 2026-10-30; physical M1 validation is **pending**. This replaces the
+Implemented 2026-10-30; partial physical M1 validation found **resume and rapid-toggle
+failures** (see results below). The full matrix remains incomplete. This replaces the
 explicit drain-on-pause policy in [step4-followup.md](step4-followup.md). Those
 older listening results remain evidence for that implementation, not this one.
 
@@ -228,5 +229,78 @@ source confirmation, restores shuffle/repeat, and pauses/stops its temporary
 Soloist. Its source track transition is driven by Next; natural boundaries and
 hardware timing still need the M1 matrix above.
 
-On-device latency, resume alignment, headphone and USB listening results remain
-**pending** until the matrix above is executed with the M1.
+On-device latency and resume alignment measurements remain **pending**. The partial
+physical pass below does not establish the timing targets or complete the matrix.
+
+### Partial M1 pass, 2026-10-30 (EDT; evidence timestamps are UTC)
+
+Tested checkout `47c5c66827e19f5710014001a1e25df25c14ad03`, without implementation
+changes, on M1 firmware **1.5.0 dev 13**, through the installed Spotify compatibility
+route. Soloist was **1.3.10.16**. The installed MIPS SHA-256 matched
+`967096297d2aaf4c6d7e6a5354d123ccd5030cdc9729a15882b0475c6310dc40`.
+Fresh offline verification passed: **186 passed, 1 skipped in 132.19 seconds**;
+the opt-in live test was skipped. Ruff lint/format and host/MIPS builds passed.
+An initial restricted test run was interrupted; these results are from the completed
+run with local socket access.
+
+Private evidence is in `build/pause-rewind-m1-qfz1yvxi/` (mode 0700).
+`matrix.json` records all 50 output/buffer/case combinations separately, with
+functional, process and listening observations: **2 pass, 5 fail, 43 deferred**.
+These are case results, not a complete output certification. Deferred cases were
+not executed; quick toggles failed before ten completed cycles could be confirmed.
+
+| Output / target | Check | Functional and process result | Listening result |
+| --- | --- | --- | --- |
+| Headphones / 1000 ms | Hardware Pause/Play: **fail** | Paused position and `at` froze; ALSA closed and output children exited. Bookmark invalid; restoration failed. Explicit Play stayed silent. | User confirmed prompt silence and frozen position; Play did not resume. |
+| Headphones / 1000 ms | Phone control: **fail** | Subsequent phone Play requests returned to paused with restore-failure diagnostics; fresh phone playback could not be established. | User reported Spotify Connect would not play. Phone Pause from audible playback was not independently established in this case. |
+| Headphones / 4000 ms | Hardware Pause/Play: **fail** | Same safe shutdown, followed by invalid bookmark and failed restoration. | User confirmed prompt silence/frozen position; Play remained silent. |
+| Headphones / 4000 ms | Reopen menus: **pass** | Playback remained paused, with ALSA closed and no output children. Subsequent explicit Play still failed. | User confirmed menus left playback paused. |
+| USB / 4000 ms | Phone Pause/Play: **pass** | Bookmark valid at 29900 ms; restore ready. Paused snapshots froze and both ALSA streams closed. Resume used fresh capture and a new output owner. | User confirmed resume at the pause point and no problems heard beyond ten seconds, covering the buffer boundary. |
+| USB / 4000 ms | Rapid hardware toggles: **fail** | Valid bookmarks preceded a bridge stall, timeout and reconnect. Relay remained paused with ALSA closed while Soloist advanced. Cycle count was not confirmed. | User reported silence and frozen M1 counter while the phone scrubber continued. |
+| USB / 1000 ms | Hardware Pause/Play: **fail** | After a track change, bookmark invalid; paused snapshots froze and ALSA closed. Explicit Play failed. | User confirmed audio stopped and position froze; Play did not restart audio. |
+
+The invalid-bookmark diagnostic was `No reliable audible bookmark; select a track
+or seek`. Headphone metadata also lagged a source track change. These failures were
+recorded before restoration; no fix was attempted during the pass. USB's one
+successful restoration does not establish reliable restoration across generations
+or rapid controls.
+
+Both output paths had advancing hardware pointers at **44100 Hz**. Headphones used
+card 0 with `aplay`; USB used card 1 with `q2video` through the existing `usb h16`
+output route. Owner/decoder process-group membership was checked independently
+for each output. No USB device at another hardware rate was tested.
+
+The M1 was at `192.168.1.210`. Ethernet bridge `192.168.1.200:7443` timed out;
+Wi-Fi `192.168.1.156:7443` connected and both targets were verified in relay logs.
+Wi-Fi also suffered interruptions, including the rapid-toggle timeout, so the
+stable-LAN prerequisite was not maintained throughout. No firewall rule was changed.
+The old UI did not relaunch the stopped service after reconfiguration; the existing
+card launcher was started directly after verifying it was stopped. This is setup
+evidence, not a firmware UI launch pass.
+
+Startup/pre-output cancellation, natural boundaries, duplicates/shuffle/repeat,
+controlled recoverable restore failure/retry, action precedence during restoration,
+USB unplug, and remaining control/output combinations are **deferred** after the
+baseline failures and connection interruptions. No synchronized audio recording
+was made: **100 ms silence and alignment targets are unmeasured**. Pointer-reset
+injection remains deferred; automated reset/XRUN/unplug coverage is separate evidence.
+
+Restoration completed before documenting these results:
+
+- Fresh backup `.soloify-pause-backup-qfz1yvxi-verified` retains checksums, modes
+  and recorded absences. An earlier partial backup is preserved: the first attempt
+  stopped because this firmware lacks `stat`; no installed files had been replaced.
+- Original `librespot`, `run` and `aplay.sh` checksums and modes match; originally
+  absent `remote` and `q2-soloify` are absent again. The card filesystem reports
+  mode 0777, including for the temporary configuration despite `chmod 600`.
+- Original backend launched and authenticated, then was stopped to restore the
+  initial service state. ALSA is closed; no test relay/decoder/player remains.
+  The original AirPlay daemon remains present as it was at the start.
+- Bridge/Soloist stopped and TCP 7443 listener closed. Generated local `remote`
+  copies and verification sockets were removed; private evidence/backups remain.
+- Final device `config.ini` matches the starting file byte for byte, including
+  volume **18**, screen/standby, headphone output and USB mode. The user confirmed
+  phone options restored; their initial values were not independently recorded.
+
+Follow-up requires investigating invalid bookmarks on real headphone/USB epochs
+and the rapid-toggle stall, then repeating the deferred matrix on a stable link.
