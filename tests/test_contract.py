@@ -149,6 +149,36 @@ async def test_initial_position_anchors_when_audio_starts(contract):
     await until(lambda: "position=1000\n" in read_state(base))
 
 
+async def test_source_loss_and_reconnect_retain_frozen_recoverable_bookmark(contract):
+    relay, peer, base = contract
+    controls(base, b"s")  # the known opening, before any output is started
+    await until(lambda: peer.bookmarks())
+    bookmark = peer.bookmarks()[0]
+    assert bookmark[4:] == b"token=1\nposition=1000\n"
+    await peer.restored(False)
+    await until(lambda: Path(f"{base}.pause-error").exists())
+    frozen = read_state(base)
+    for word in ("none", "stopped", "playing"):
+        await peer.send(wire.STATE, state(word=word, position=80000))
+        await asyncio.sleep(0.05)
+        assert read_state(base) == frozen
+        assert not children(relay.proc.pid)
+    peer.writer.close()
+    await peer.writer.wait_closed()
+    await until(lambda: len(peer.bookmarks()) == 2)
+    assert peer.bookmarks()[1] == bookmark
+    assert read_state(base) == frozen
+    controls(base, b"P")
+    await until(lambda: peer.controls()[-1] == b"P")
+    await peer.restored()
+    await peer.send(wire.BOUNDARY, b"P")
+    await peer.send(wire.STATE, state())
+    await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
+    await peer.packets(20)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    assert not Path(f"{base}.pause-error").exists()
+
+
 async def test_late_cover_appears_while_paused(contract):
     _, peer, base = contract
     await peer.send(wire.STATE, state(word="paused", cover=False))

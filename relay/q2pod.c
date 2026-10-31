@@ -354,6 +354,9 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
         if (strcmp(word, "none") && strcmp(word, "stopped") && strcmp(word, "paused") && strcmp(word, "playing")) return;
         memcpy(upstream, text, n + 1);
         if (resetting) return;
+        /* Loss of the source is an observation, not a replacement of the user's
+         * audible bookmark. Keep its identity and frozen metadata for retry. */
+        if (pause_active && (!strcmp(word, "none") || !strcmp(word, "stopped"))) return;
         if (commands && ((!strcmp(word, "playing")) == held)) return;
         if (strcmp(word, "playing")) {
             if (commands) return;

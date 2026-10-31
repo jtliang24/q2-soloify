@@ -91,6 +91,7 @@ class Player:
         self.sent: tuple | None = None
         self.initial_snapshot = True
         self.transition_snapshot = False
+        self.transition_kind = None
         self.deferred = False  # a control's state follows its ordered boundary
         self.cover: tuple[str, bytes] | None = None  # (track uri, JPEG)
         self.fetching: str | None = None
@@ -107,6 +108,7 @@ class Player:
         """One event from Soloist's WebSocket."""
         was_playing = self.state.playing
         kind = event.get("type")
+        self.transition_kind = kind
         if kind == "gone":
             self.initial_snapshot = True
         self.transition_snapshot = kind in ("auth_state", "device_changed", "gone") or (
@@ -127,7 +129,14 @@ class Player:
             self._stalled(False)
         elif event.get("status") == "playing" and not self.timeline.restoring:
             self.explicit_paused = False
-        if self.capture_changed and was_playing != s.playing and not self.recovery_pausing:
+        if (
+            self.capture_changed
+            and (
+                was_playing != s.playing
+                or (kind == "playback_changed" and event.get("status") in ("paused", "playing"))
+            )
+            and not self.recovery_pausing
+        ):
             self.capture_changed(s.playing)
         if (
             event.get("type")

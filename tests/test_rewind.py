@@ -124,6 +124,242 @@ async def test_seek_restores_paused_position_and_preserves_context_options():
     assert not rewind.bookmark.failed
 
 
+async def test_repeat_track_without_queue_movement_cannot_select_an_older_duplicate():
+    player, source, rewind = setup_source(("a", "a"))
+    source.repeat = "track"
+    source.serial += 12000
+    source.position = 12000
+    source.emit()
+    heard = player.timeline.current
+    rewind.remember(b"\0\0\0\x0b" + f"token={heard.token}\nposition=12500\n".encode())
+    source.serial += 180000
+    source.position = 0
+    source.emit()  # a new repeat lap, with the SAME queue entry still current
+    assert player.timeline.current is not heard
+    with pytest.raises(RestoreError, match="ambiguous"):
+        await rewind.restore()
+    assert source.index == 1
+    assert not any(name == "skip_prev" for name, _ in source.calls)
+
+
+@pytest.mark.parametrize("action", [b"S50000", b"n", b"browse"])
+async def test_new_navigation_supersedes_delayed_restoration(action):
+    rig = Rig(limit=1000)
+    await _settle()
+    player = rig.session.player
+    source = player.ws = Source(player, ("a", "b"), 0)
+    source.delay = 0.08
+    writer = rig.session.writer = Writer()
+    token = player.timeline.current.token
+    payload = b"\0\0\0\7" + f"token={token}\nposition=12500\n".encode()
+    task = None
+    try:
+        await rig.send(wire.BOOKMARK, payload)
+        await until(lambda: source.calls)
+        if action == b"browse":
+
+            async def prepare():
+                async def play():
+                    await source.command("skip_next")
+
+                return play
+
+            task = asyncio.create_task(rig.session.browse_boundary(prepare))
+            await _settle()
+        else:
+            await rig.send(wire.CONTROL, action)
+        await until(lambda: not rig.session.control_tasks)
+        if task:
+            await task
+        assert ("seek", {"position_ms": 12500}) not in source.calls
+        assert not rig.session.rewind.bookmark
+        if action == b"S50000":
+            assert source.position == 50000
+        else:
+            assert source.index == 1
+        assert wire.frame(wire.BOUNDARY, b"Q" if action == b"browse" else action) in writer.data
+    finally:
+        rig.task.cancel()
+        await asyncio.gather(rig.task, return_exceptions=True)
+
+
+async def test_latest_pause_aborts_play_waiting_for_capture_without_timeout():
+    rig = Rig(limit=1000)
+    await rig.send(wire.AUDIO_REQUEST, b"1")
+    player = rig.session.player
+    source = player.ws = Source(player)
+    rig.session.writer = Writer()
+    token = player.timeline.current.token
+    payload = b"\0\0\0\x08" + f"token={token}\nposition=12500\n".encode()
+    try:
+        await rig.send(wire.BOOKMARK, payload)
+        await until(lambda: not rig.session.control_tasks)
+        bookmark = player.rewind.bookmark
+        await rig.send(wire.CONTROL, b"P")
+        await until(lambda: len(rig.encoders) == 2)
+        # No capture packet arrives: the newer Pause must wake the readiness wait.
+        await rig.send(wire.BOOKMARK, payload)
+        await until(lambda: not rig.session.control_tasks, timeout=1)
+        assert source.word == "paused" and not rig.session.streaming
+        assert player.rewind.bookmark is bookmark
+        assert all(encoder.stopped for encoder in rig.encoders)
+        assert not any(name == "play" for name, _ in source.calls)
+    finally:
+        rig.task.cancel()
+        await asyncio.gather(rig.task, return_exceptions=True)
+
+
+async def test_reconnect_play_primes_bookmark_without_an_earlier_audio_request():
+    rig = Rig(limit=1000)
+    await _settle()
+    player = rig.session.player
+    source = player.ws = Source(player)
+    rig.session.writer = Writer()
+    token = player.timeline.current.token
+    payload = b"\0\0\0\x0c" + f"token={token}\nposition=12500\n".encode()
+    try:
+        await rig.send(wire.BOOKMARK, payload)
+        await until(lambda: not rig.session.control_tasks)
+        assert rig.session.audio_request is None
+        await rig.send(wire.CONTROL, b"P")
+        await until(lambda: rig.encoders, timeout=1)
+        assert source.word == "paused"
+        await rig.encoders[-1].queue.put(b"warmup")
+        await until(lambda: not rig.session.control_tasks)
+        assert source.word == "playing" and rig.session.streaming
+        assert player.rewind.bookmark is None
+    finally:
+        rig.task.cancel()
+        await asyncio.gather(rig.task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("phone", [False, True])
+async def test_pause_supersedes_dispatched_play_and_keeps_recoverable_bookmark(phone):
+    rig = Rig(limit=1000)
+    await rig.send(wire.AUDIO_REQUEST, b"1")
+    player = rig.session.player
+    source = player.ws = Source(player)
+    rig.session.writer = Writer()
+    token = player.timeline.current.token
+    payload = b"\0\0\0\x09" + f"token={token}\nposition=12500\n".encode()
+    dispatched, release = asyncio.Event(), asyncio.Event()
+    command = source.command
+
+    async def delayed_play(name, **fields):
+        if name == "play":
+            dispatched.set()
+            await release.wait()
+        return await command(name, **fields)
+
+    source.command = delayed_play
+    try:
+        await rig.send(wire.BOOKMARK, payload)
+        await until(lambda: not rig.session.control_tasks)
+        bookmark = player.rewind.bookmark
+        await rig.send(wire.CONTROL, b"P")
+        await until(lambda: len(rig.encoders) == 2)
+        await rig.encoders[-1].queue.put(b"warmup")
+        await asyncio.wait_for(dispatched.wait(), 1)
+        if phone:
+            # The source is already paused while Play's dispatch response is late.
+            player.event({"type": "playback_changed", "status": "paused"})
+        else:
+            await rig.send(wire.BOOKMARK, payload)
+        release.set()
+        await until(lambda: not rig.session.control_tasks, timeout=1)
+        assert source.word == "paused" and not rig.session.streaming
+        assert player.rewind.bookmark is bookmark
+        assert all(encoder.stopped for encoder in rig.encoders)
+    finally:
+        release.set()
+        rig.task.cancel()
+        await asyncio.gather(rig.task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("intermediate", ["stale_query", "buffering"])
+async def test_intermediate_play_states_do_not_become_phone_pause(intermediate):
+    rig = Rig(limit=1000)
+    await rig.send(wire.AUDIO_REQUEST, b"1")
+    player = rig.session.player
+    source = player.ws = Source(player)
+    writer = rig.session.writer = Writer()
+    token = player.timeline.current.token
+    payload = b"\0\0\0\x0a" + f"token={token}\nposition=12500\n".encode()
+    request = source.request
+    command = source.command
+    stale = True
+
+    async def delayed_state(name, **fields):
+        nonlocal stale
+        if (
+            intermediate == "stale_query"
+            and name == "get_state"
+            and source.word == "playing"
+            and stale
+        ):
+            stale = False
+            event = source.event()
+            event["status"] = "paused"
+            event["position"]["speed"] = 0
+            player.event(event)
+            return event
+        return await request(name, **fields)
+
+    async def buffering_play(name, **fields):
+        nonlocal stale
+        if intermediate == "buffering" and name == "play":
+            stale = False
+            player.event({"type": "playback_changed", "status": "buffering"})
+        return await command(name, **fields)
+
+    source.request = delayed_state
+    source.command = buffering_play
+    try:
+        await rig.send(wire.BOOKMARK, payload)
+        await until(lambda: not rig.session.control_tasks)
+        writer.data.clear()
+        await rig.send(wire.CONTROL, b"P")
+        await until(lambda: len(rig.encoders) == 2)
+        await rig.encoders[-1].queue.put(b"warmup")
+        await until(lambda: not rig.session.control_tasks)
+        assert not stale and source.word == "playing"
+        assert rig.session.streaming and player.rewind.bookmark is None
+        assert wire.frame(wire.PAUSE_NOW) not in writer.data
+        assert rig.session.capture.release.is_set()
+    finally:
+        rig.task.cancel()
+        await asyncio.gather(rig.task, return_exceptions=True)
+
+
+async def test_browse_play_ignores_earlier_pause_notifications_during_mutation():
+    rig = Rig(limit=1000)
+    await _settle()
+    player = rig.session.player
+    source = player.ws = Source(player)
+    writer = rig.session.writer = Writer()
+    rig.session.capture_blocked = True
+
+    async def prepare():
+        async def action():
+            await source.command("play")
+            # The old Pause's fade notification can follow the newer API Play.
+            player.event({"type": "playback_changed", "status": "paused"})
+
+        return action
+
+    try:
+        await rig.session.browse_boundary(prepare)
+        await until(lambda: not rig.session.control_tasks)
+        assert source.word == "playing" and not player.explicit_paused
+        assert not rig.session.capture_blocked
+        assert wire.frame(wire.PAUSE_NOW) not in writer.data
+        assert wire.frame(wire.BOUNDARY, b"Q") in writer.data
+        assert not rig.session.mutating and not player.deferred
+    finally:
+        rig.task.cancel()
+        await asyncio.gather(rig.task, return_exceptions=True)
+
+
 @pytest.mark.parametrize("tracks", [("a", "b"), ("a", "b", "a")])
 async def test_restores_heard_occurrence_through_verified_previous_history(tracks):
     player, source, rewind = setup_source(tracks)
@@ -355,6 +591,12 @@ async def test_reconnect_snapshot_does_not_retry_failed_bookmark_or_play():
         await _settle()
         assert wire.frame(wire.PAUSE_NOW, b"P") not in writer.data
         assert not source.calls
+        source.word = "paused"
+        source.emit()
+        writer.data.clear()
+        source.word = "playing"
+        source.emit()  # a later queried snapshot is still not an explicit phone Play
+        assert wire.frame(wire.PAUSE_NOW, b"P") not in writer.data
         await rig.session.pause_bookmark(payload)  # relay reconnect re-sends its bookmark
         assert rig.session.rewind.bookmark is bookmark
         assert not any(name == "seek" for name, _ in source.calls)
@@ -384,7 +626,7 @@ async def test_phone_play_during_pause_shutdown_is_ordered_after_bookmark():
     try:
         await stopping.wait()
         source.word = "playing"  # the phone pressed Play while encoder shutdown holds the lock
-        source.emit()
+        rig.session.player.event({"type": "playback_changed", "status": "playing"})
         assert wire.frame(wire.PAUSE_NOW, b"P") in writer.data
         release.set()
         await task

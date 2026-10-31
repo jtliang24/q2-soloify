@@ -9,11 +9,11 @@ import struct
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import wire
 from .player import Player
-from .rewind import RestoreError
+from .rewind import RestoreError, Superseded
 from .soloist import SINK
 
 log = logging.getLogger("soloify")
@@ -147,6 +147,15 @@ class Encoder:
                 await self.proc.wait()
 
 
+@dataclass
+class Capture:
+    encoder: Encoder
+    generation: int
+    stopping: asyncio.Event = field(default_factory=asyncio.Event)
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+
+
 class Session:
     """One relay's connection: its controls go to the player, which sends it the state and covers;
     and its audio, an encoder while the relay asks for audio, stopped when unacked audio goes over
@@ -174,15 +183,29 @@ class Session:
         self.stall_generation = None
         self.unacked = deque()
         self.ack_progress = asyncio.Event()
-        self.capture_stopping = asyncio.Event()
-        self.capture_ready = asyncio.Event()
-        self.capture_release = asyncio.Event()
         self.last_ack = 0.0
         self.capture_blocked = False
         self.rewind = player.rewind
         self.awaiting_bookmark = False
         self.mutating = False
         self.pausing = False
+        self.intent_revision = 0
+        self.intent_kind = None
+        self.capture = None
+        self.intent_changed = asyncio.Event()
+
+    def intent(self, kind):
+        self.intent_changed.set()
+        self.intent_changed = asyncio.Event()
+        self.intent_revision += 1
+        self.intent_kind = kind
+        if kind == b"s":
+            self.capture_blocked = True
+        return self.intent_revision
+
+    def check_intent(self, revision):
+        if revision != self.intent_revision:
+            raise Superseded
 
     @property
     def streaming(self) -> bool:
@@ -230,7 +253,8 @@ class Session:
                         raise wire.WireError("invalid pause bookmark")
                     self.capture_blocked = True
                     self.awaiting_bookmark = True
-                    task = asyncio.create_task(self.pause_bookmark(payload))
+                    revision = self.intent(b"s")
+                    task = asyncio.create_task(self.pause_bookmark(payload, revision))
                     self.control_tasks.add(task)
                     task.add_done_callback(self.control_tasks.discard)
                 elif kind == wire.CONTROL:
@@ -238,7 +262,10 @@ class Session:
                         raise wire.WireError("too many controls")
                     if payload[:1] in (b"n", b"b", b"S"):
                         self.reset_controls += 1
-                    task = asyncio.create_task(self.control(payload, queued=True))
+                    revision = self.intent(payload[:1])
+                    task = asyncio.create_task(
+                        self.control(payload, queued=True, revision=revision)
+                    )
                     self.control_tasks.add(task)
                     task.add_done_callback(self.control_tasks.discard)
                 elif kind == wire.BROWSE_REQUEST:
@@ -246,7 +273,15 @@ class Session:
                         raise wire.WireError("invalid browse frame")
                     if len(self.pending_browse) >= 4:
                         raise wire.WireError("too many browse operations")
-                    task = asyncio.create_task(self.browse(payload))
+                    from .browse import parse
+
+                    revision = None
+                    try:
+                        if parse(payload[4:])[1] in ("play", "skip"):
+                            revision = self.intent(b"Q")
+                    except (ValueError, UnicodeError):
+                        pass
+                    task = asyncio.create_task(self.browse(payload, revision))
                     self.pending_browse.add(task)
                     task.add_done_callback(self.pending_browse.discard)
                 elif kind == wire.STATS:
@@ -271,11 +306,11 @@ class Session:
             if self.pump:
                 await asyncio.wait([self.pump], timeout=5)
 
-    async def browse(self, payload):
+    async def browse(self, payload, revision=None):
         from .browse import parse, response
 
         async def boundary(prepare, reset):
-            return await self.browse_boundary(prepare, reset, payload[:4])
+            return await self.browse_boundary(prepare, reset, payload[:4], revision)
 
         if self.browser:
             reply = await self.browser.handle(payload[4:], boundary)
@@ -287,10 +322,16 @@ class Session:
                 reply = response("0", "bad", "Malformed request")
         self.writer.write(wire.frame(wire.BROWSE_RESPONSE, payload[:4] + reply))
 
-    async def browse_boundary(self, prepare, reset=True, correlation=b"\0\0\0\0"):
+    async def browse_boundary(self, prepare, reset=True, correlation=b"\0\0\0\0", revision=None):
+        from .spotify import APIError
+
+        if reset and revision is None:
+            revision = self.intent(b"Q")
         async with self.lock:
             action = await prepare()  # read-only: neither capture nor sink is disturbed
-            self.player.deferred = True
+            if reset and revision != self.intent_revision:
+                raise APIError("error", "Superseded by a newer playback command")
+            self.mutating = self.player.deferred = True
             try:
                 if reset:
                     log.info(
@@ -301,11 +342,24 @@ class Session:
                     self.writer.write(wire.frame(wire.RESET_BEGIN, correlation))
                     await self._halt("control")
                 result = await action()
-                if reset:
+                if reset and self.player.ws and revision == self.intent_revision:
+                    # A previous Pause's fade notification can arrive after the new
+                    # API Play. Publish freshly confirmed state at the reset boundary.
+                    await self.rewind.snapshot(
+                        lambda state: state.word == "playing" or revision != self.intent_revision
+                    )
+                if reset and revision == self.intent_revision:
+                    self.capture_blocked = False
                     self.player.explicit_paused = False
                     self.player._stalled(False)
+                elif reset and self.intent_kind == b"s":
+                    await self.player.control(b"s")
                 await asyncio.sleep(self.player.SETTLE)
                 return result
+            except RestoreError as error:
+                self.capture_blocked = True
+                self.player.explicit_paused = True
+                raise APIError("error", str(error)) from error
             finally:
                 # Once begun, even cancellation must drain old capture and finish the reset.
                 if reset:
@@ -315,26 +369,44 @@ class Session:
                     )
                 self.player.sent = None
                 self.player._send_cover()
-                self.player.deferred = False
+                self.mutating = self.player.deferred = False
                 self.player.flush()
 
     def playback_changed(self, playing):
         """External pause stops local output before capture shutdown or source restoration."""
         if (
             playing
-            and self.player.transition_snapshot
+            and (self.player.transition_snapshot or self.player.transition_kind == "playback_state")
             and (self.rewind.bookmark or self.awaiting_bookmark)
         ):
-            return  # a reconnect snapshot is not an explicit phone Play
-        if playing and self.pausing and not self.rewind.navigating:
+            return  # a queried/reconnect snapshot is not an explicit phone Play
+        if (
+            playing
+            and self.pausing
+            and not self.rewind.navigating
+            and self.player.transition_kind == "playback_changed"
+        ):
             # Phone Play during encoder shutdown/seek must not disappear behind the
             # restore lock. Skip's temporary auto-play is internal navigation instead.
+            self.intent(b"P")
             self.writer.write(wire.frame(wire.PAUSE_NOW, b"P"))
+            return
+        if (
+            not playing
+            and self.mutating
+            and self.intent_kind == b"P"
+            and not self.player.timeline.restoring
+            and not self.pausing
+            and self.player.transition_kind == "playback_changed"
+        ):
+            self.intent(b"s")
+            self.awaiting_bookmark = True
+            self.writer.write(wire.frame(wire.PAUSE_NOW))
             return
         if self.mutating or self.player.recovery_pausing or self.player.timeline.restoring:
             return
         if not playing:
-            self.capture_blocked = True
+            self.intent(b"s")
             if self.player.state.state == "paused":
                 self.awaiting_bookmark = True
                 self.writer.write(wire.frame(wire.PAUSE_NOW))
@@ -381,8 +453,12 @@ class Session:
                 )
             )
 
-    async def pause_bookmark(self, payload):
+    async def pause_bookmark(self, payload, revision=None):
+        if revision is None:
+            revision = self.intent(b"s")
         async with self.lock:
+            if revision != self.intent_revision and self.intent_kind not in (b"s", b"P"):
+                return  # navigation has replaced the old audible position
             self.pausing = True
             self.mutating = self.player.deferred = True
             self.player.explicit_paused = True
@@ -395,10 +471,15 @@ class Session:
                     self.rewind.remember(payload[:4])
                 await self.player.control(b"s")
                 await self._halt("pause")
+                self.check_intent(revision)
                 if self.rewind.bookmark is previous and previous.failed:
                     raise RestoreError(previous.failed)  # retry only on explicit Play
-                await self.rewind.restore()
+                await self.rewind.restore(lambda: revision == self.intent_revision)
                 self.restored(True)
+            except Superseded:
+                # The retained bookmark belongs to the next queued Pause/Play. A
+                # phone Play during shutdown must not leave the source advancing.
+                await self.player.control(b"s")
             except RestoreError as error:
                 log.warning("pause restore failed: %s", error)
                 self.restored(False, str(error))
@@ -438,30 +519,50 @@ class Session:
         if self.player.ws and not self.player.state.playing and not self.player.paused_by_us:
             return
         recovering = self.player.paused_by_us
+        revision = self.intent_revision
+        capture = None
         try:
             await self._start_capture(recovering)
+            capture = self.capture
+            self.check_intent(revision)
             if recovering:
                 self.encoder.present_at = time.time()
                 await self.player.resume()
+                self.check_intent(revision)
                 if self.player.paused_by_us:
                     await self._halt("pause")
-        except TimeoutError:
+        except (TimeoutError, Superseded):
             log.info("capture readiness deadline gen=%d", self.generation)
             await self._halt("pause")
         finally:
-            self.capture_release.set()
+            if capture and revision == self.intent_revision:
+                capture.release.set()
 
     async def _start_capture(self, priming=False):
+        changed = self.intent_changed
         self.generation += 1
-        self.capture_stopping = asyncio.Event()
-        self.capture_ready = asyncio.Event()
-        self.capture_release = asyncio.Event()
         self.encoder = self.encoder_factory()
+        capture = self.capture = Capture(self.encoder, self.generation)
         await self.encoder.start()
         log.info("audio on gen=%d inflight=%d", self.generation, self.inflight_ms())
-        self.pump = asyncio.create_task(self._pump(self.encoder, self.generation, priming))
+        self.pump = asyncio.create_task(self._pump(capture, priming))
         if priming:
-            await asyncio.wait_for(self.capture_ready.wait(), CAPTURE_READY_TIMEOUT)
+            ready = asyncio.create_task(capture.ready.wait())
+            obsolete = asyncio.create_task(changed.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    (ready, obsolete),
+                    timeout=CAPTURE_READY_TIMEOUT,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if changed.is_set():
+                    raise Superseded
+                if not done:
+                    raise TimeoutError
+            finally:
+                ready.cancel()
+                obsolete.cancel()
+                await asyncio.gather(ready, obsolete, return_exceptions=True)
             log.info(
                 "capture ready gen=%d word=%s position=%d",
                 self.generation,
@@ -478,8 +579,9 @@ class Session:
             return
         encoder, self.encoder = self.encoder, None
         pump = self.pump
-        self.capture_stopping.set()
-        self.capture_release.set()
+        capture = self.capture
+        capture.stopping.set()
+        capture.release.set()
         self.ack_progress.set()
         log.info(
             "audio off gen=%d reason=%s inflight=%d ack_age=%.3f oldest_age=%.3f",
@@ -521,24 +623,35 @@ class Session:
         finally:
             self.halting = None
 
-    async def control(self, payload: bytes, queued=False) -> None:
+    async def control(self, payload: bytes, queued=False, revision=None) -> None:
         """Old capture drains before its boundary. Prime capture BEFORE the final mutation:
         Soloist can auto-play on skip even when paused, so starting afterward loses the intro."""
+        if revision is None:
+            revision = self.intent(payload[:1])
         async with self.lock:
             self.mutating = self.player.deferred = True
             primed = False
+            capture = None
             try:
+                if payload[:1] in (b"P", b"s"):
+                    self.check_intent(revision)
                 reset = payload[:1] in (b"n", b"b", b"S")
-                taking_audio = self.streaming or self.audio_request is not None
+                taking_audio = (
+                    self.streaming
+                    or self.audio_request is not None
+                    or (payload[:1] == b"P" and self.rewind.bookmark is not None)
+                )
                 if reset:
-                    self.rewind.bookmark = None
                     self.awaiting_bookmark = False
                 if payload[:1] == b"P" and self.rewind.bookmark:
-                    await self.rewind.restore()
+                    await self.rewind.restore(lambda: revision == self.intent_revision)
+                    self.check_intent(revision)
                     self.restored(True)
                 if payload[:1] == b"P" and taking_audio and not self.streaming:
                     self.capture_blocked = False
                     await self._start_capture(priming=True)
+                    capture = self.capture
+                    self.check_intent(revision)
                     primed = True
                 if reset:
                     if taking_audio:
@@ -546,16 +659,24 @@ class Session:
                     await self._halt("control")
                     if taking_audio and self.reset_controls <= 1:
                         await self._start_capture(priming=True)
+                        capture = self.capture
+                        self.check_intent(revision)
                         primed = True
                 if primed:
                     self.encoder.present_at = time.time()
+                if reset:
+                    self.rewind.bookmark = None  # the mutation is now ready to dispatch
                 if payload[:1] == b"P" and self.rewind.bookmark:
                     self.player.explicit_paused = False
                     self.player._stalled(False)
                     await self.rewind.command("play")
+                    self.check_intent(revision)
                     await self.rewind.snapshot(lambda state: state.word == "playing")
+                    self.check_intent(revision)
                 else:
                     await self.player.control(payload)
+                    if payload[:1] == b"P":
+                        self.check_intent(revision)
                 if payload[:1] == b"s":
                     # Local output has already stopped; no pause fade needs to be retained.
                     self.capture_blocked = True
@@ -565,9 +686,20 @@ class Session:
                         self.player._stalled(False)  # Soloist auto-played; capture already has it
                     else:
                         await self.player.resume()
-                if payload[:1] == b"P":
-                    self.rewind.bookmark = None
+                    if payload[:1] == b"S" and self.player.explicit_paused:
+                        # A paused seek has no output request. Its gated encoder must
+                        # not be reused by Play, which requires a fresh capture header.
+                        await self._halt("pause")
                 await asyncio.sleep(self.player.SETTLE)
+                if payload[:1] == b"P":
+                    self.check_intent(revision)
+                    self.rewind.bookmark = None
+            except Superseded:
+                if primed or capture or self.capture is not None:
+                    await self._halt("pause")
+                # A dispatched Play may have completed after the newer Pause arrived.
+                if self.player.ws and self.intent_kind == b"s":
+                    await self.player.control(b"s")
             except RestoreError as error:
                 self.capture_blocked = True
                 self.player.explicit_paused = True
@@ -593,13 +725,14 @@ class Session:
                 if queued and payload[:1] in (b"n", b"b", b"S"):
                     self.reset_controls -= 1
                 self.player.flush()
-                self.capture_release.set()  # new audio follows the final boundary and state
+                if capture and revision == self.intent_revision:
+                    capture.release.set()  # new audio follows the final boundary and state
 
-    async def _capacity(self, generation):
+    async def _capacity(self, generation, stopping):
         """Yield bursts to the ACK reader, bounded by the oldest packet's target deadline."""
         loop = asyncio.get_running_loop()
         while self.inflight_ms() >= self.limit and self.unacked:
-            if generation != self.generation or self.capture_stopping.is_set():
+            if generation != self.generation or stopping.is_set():
                 return True  # shutdown drains a bounded tail, without waiting for the network
             remaining = self.unacked[0][1] + self.limit / 1000 - loop.time()
             if remaining <= 0:
@@ -611,7 +744,8 @@ class Session:
                 return False
         return True
 
-    async def _pump(self, encoder: Encoder, generation: int, priming=False) -> None:
+    async def _pump(self, capture, priming=False) -> None:
+        encoder, generation = capture.encoder, capture.generation
         loop = asyncio.get_running_loop()
         burst, burst_at, tail = 0, loop.time(), 0
         announced, last_burst_log = False, 0.0
@@ -625,10 +759,10 @@ class Session:
             end_samples = packet.samples if isinstance(packet, OpusTail) else None
             if isinstance(packet, OpusTail):
                 packet = packet.data
-            if not self.capture_ready.is_set():
-                self.capture_ready.set()
+            if not capture.ready.is_set():
+                capture.ready.set()
                 if priming:
-                    await self.capture_release.wait()
+                    await capture.release.wait()
                     start = getattr(encoder, "capture_at", None)
                     present = getattr(encoder, "present_at", None)
                     skip = (
@@ -665,7 +799,7 @@ class Session:
             burst += 1
             if self.writer.is_closing() or generation != self.generation:
                 continue
-            if not await self._capacity(generation):
+            if not await self._capacity(generation, capture.stopping):
                 if self.stall_generation != generation:
                     self.stall_generation = generation
                     task = asyncio.create_task(self.halt("stall", generation))

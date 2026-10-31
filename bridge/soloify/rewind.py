@@ -18,6 +18,10 @@ class RestoreError(Exception):
     """Keep the local output silent until another explicit Play retries the bookmark."""
 
 
+class Superseded(Exception):
+    """A newer user intent owns source playback now."""
+
+
 @dataclass
 class Occurrence:
     token: int
@@ -105,6 +109,11 @@ class Rewind:
         self.player = player
         self.bookmark = None
         self.navigating = False
+        self.valid = None
+
+    def check(self):
+        if self.valid is not None and not self.valid():
+            raise Superseded
 
     def remember(self, payload):
         if len(payload) < 4:
@@ -131,14 +140,18 @@ class Rewind:
         self.bookmark = Bookmark(payload[:4], occurrence, position)
 
     async def command(self, name, **fields):
+        self.check()
         if not self.player.ws or not await self.player.ws.command(name, **fields):
             raise RestoreError(f"Source refused {name}")
+        self.check()
 
     async def snapshot(self, predicate):
         """A dispatch ACK is insufficient: query until actual source state confirms it."""
         async with asyncio.timeout(self.TIMEOUT):
             while True:
+                self.check()
                 event = await self.player.ws.request("get_state")
+                self.check()
                 state = State()
                 state.apply(event)
                 if not state.active:
@@ -152,7 +165,10 @@ class Rewind:
         return entry.get("uid"), entry.get("item", {}).get("uri"), entry.get("source")
 
     async def queue(self):
-        return await self.player.ws.request("get_queue", limit=128)
+        self.check()
+        result = await self.player.ws.request("get_queue", limit=128)
+        self.check()
+        return result
 
     async def navigate(self, op, before):
         """Confirm the occurrence actually visited, not just its URI or dispatch ACK.
@@ -172,6 +188,7 @@ class Rewind:
         async with asyncio.timeout(self.TIMEOUT):
             while True:
                 event = await self.player.ws.request("get_state")
+                self.check()
                 state = State()
                 state.apply(event)
                 after = await self.queue()
@@ -195,7 +212,8 @@ class Rewind:
                     return moved[0], after
                 await asyncio.sleep(0.02)
 
-    async def restore(self):
+    async def restore(self, valid=None):
+        self.valid = valid
         try:
             async with asyncio.timeout(self.TOTAL_TIMEOUT):
                 await self._restore()
@@ -206,6 +224,8 @@ class Rewind:
             if self.player.ws:
                 await self.player.ws.command("pause")
             raise RestoreError("Source restoration timed out") from error
+        finally:
+            self.valid = None
 
     async def _restore(self):
         bookmark = self.bookmark
@@ -240,6 +260,16 @@ class Rewind:
                     if current is not None:
                         route.append(current)
                 current = p.timeline.current
+                if (
+                    route
+                    and observed.repeat == "track"
+                    and all(
+                        item.state.track.uri == target.state.track.uri for item in [*route, current]
+                    )
+                ):
+                    # A repeated lap does not advance the queue. An older duplicate
+                    # in Previous cannot identify the heard lap's queue occurrence.
+                    raise RestoreError("Repeat-track occurrence is ambiguous")
                 if any(item.state.context != target.state.context for item in [*route, current]):
                     raise RestoreError("Playback context changed")
                 previous = (await self.queue()).get("previous", []) if route else []
