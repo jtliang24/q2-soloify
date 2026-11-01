@@ -12,7 +12,7 @@ Version 2: audio, presentation anchors, immediate pause/rewind, state, covers, c
 
 | Type | Direction | Payload |
 | --- | --- | --- |
-| `A` | relay → bridge | `1 MS`: send audio, MS being the relay's buffer target. `0 pause`: stop the encoder, without issuing another pause or marking it as a stall. The explicit `R` bookmark carries the device pause. |
+| `A` | relay → bridge | `1 MS [KBPS]`: send audio, MS being the relay's buffer target and KBPS, when the user has set a Quality, the Opus bitrate (96, 128 or 160) for the encoder run this request starts; any other value, or none, leaves the bridge's `--bitrate`. The relay repeats both with every `A 1`. `0 pause`: stop the encoder, without issuing another pause or marking it as a stall. The explicit `R` bookmark carries the device pause. |
 | `k` | relay → bridge | u32: audio packets received since the hello, sent about every 200 ms while audio flows and at least every 5 s otherwise; the bridge drops a relay it hears nothing from for 20 s |
 | `t` | relay → bridge | stats as text (`key=value` words), logged by the bridge |
 | `c` | relay → bridge | `P` play, `n` next, `b` previous, `S<ms>` seek. Device `p` is resolved locally; Pause uses `R`. Bare `c s` remains a source-only control for diagnostic clients. |
@@ -114,7 +114,7 @@ External pause uses the same immediate-drop bookmark exchange as above. Deactiva
 
 ## Audio
 
-An `A 1` while capture is stopped starts a new encoder on the bridge, and each stop ends it, so nothing queues on the server while the relay isn't taking audio. The packets carry no Ogg framing. Each encoder run becomes an independent Ogg Opus stream on the relay. The queue retains its generation, warmup and exact final-sample count. When playback reaches the next generation, only the decoder drains/restarts; the same PCM player keeps ALSA open. This prevents a predictive decoder from interpreting a fresh encoder as continuation of the old one. Encoder padding and warmup are decoded then trimmed. Restarting a decoder partway through a queued generation supplies up to 80 ms of history as pre-roll, excluded from playback. Explicit pause discards that generation instead of retaining it. The stock ffmpeg line preserves its probe packets (no `-fflags nobuffer`, which discarded initial audio in exact-length tests).
+An `A 1` while capture is stopped starts a new encoder on the bridge, at the bitrate that request names, and each stop ends it, so nothing queues on the server while the relay isn't taking audio. The packets carry no Ogg framing. Each encoder run becomes an independent Ogg Opus stream on the relay. The queue retains its generation, warmup and exact final-sample count. When playback reaches the next generation, only the decoder drains/restarts; the same PCM player keeps ALSA open. This prevents a predictive decoder from interpreting a fresh encoder as continuation of the old one. Encoder padding and warmup are decoded then trimmed. Restarting a decoder partway through a queued generation supplies up to 80 ms of history as pre-roll, excluded from playback. Explicit pause discards that generation instead of retaining it. The stock ffmpeg line preserves its probe packets (no `-fflags nobuffer`, which discarded initial audio in exact-length tests).
 
 Flow control is in the application, not left to TCP. The bridge records each packet's
 send time and counts sent minus acknowledged packets. At the in-flight limit it
