@@ -22,6 +22,7 @@ FRAME_MS = 20
 # The relay sends an ack at least every 5 s (docs/wire.md); silence this long means it's gone
 IDLE_TIMEOUT = 20
 MIN_INFLIGHT_MS = 300
+BITRATES = (96, 128, 160)
 CAPTURE_READY_TIMEOUT = 3
 # A 100 ms 1 kHz beep each second, in real time: latency and stall tests without Soloist
 TEST_SOURCE = [
@@ -170,6 +171,7 @@ class Session:
         self.control_tasks = set()
         self.audio_request = None
         self.encoder_factory = encoder
+        self.bitrate: int | None = None
         self.limit = inflight_ms
         self.encoder: Encoder | None = None
         self.pump: asyncio.Task | None = None
@@ -499,12 +501,20 @@ class Session:
                 self.player.flush()
 
     def target(self, payload: bytes) -> None:
-        """`A 1 MS` carries the relay's buffer target, which is also the in-flight limit: a stall
-        longer than the relay's buffer pauses Soloist, and leaves a backlog of one buffer."""
+        """`A 1 MS [KBPS]` carries the relay's buffer target, which is also the in-flight limit: a
+        stall longer than the relay's buffer pauses Soloist, and leaves a backlog of one buffer.
+        The optional bitrate is the relay's Quality setting, for the next encoder run; anything
+        but 96, 128 or 160 leaves the bridge's own default."""
+        fields = payload[2:].split()
         try:
-            self.limit = max(int(payload[2:]), MIN_INFLIGHT_MS)
-        except ValueError:
+            self.limit = max(int(fields[0]), MIN_INFLIGHT_MS)
+        except (IndexError, ValueError):
             pass
+        try:
+            rate = int(fields[1])
+        except (IndexError, ValueError):
+            rate = None
+        self.bitrate = rate if rate in BITRATES else None
 
     async def want(self) -> None:
         async with self.lock:
@@ -549,7 +559,8 @@ class Session:
     async def _start_capture(self, priming=False):
         changed = self.intent_changed
         self.generation += 1
-        self.encoder = self.encoder_factory()
+        # Only a relay that asked for a quality gets one; the factory's default otherwise
+        self.encoder = self.encoder_factory(self.bitrate) if self.bitrate else self.encoder_factory()
         capture = self.capture = Capture(self.encoder, self.generation)
         await self.encoder.start()
         log.info("audio on gen=%d inflight=%d", self.generation, self.inflight_ms())

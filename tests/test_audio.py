@@ -81,12 +81,14 @@ class Rig:
         player.event({"type": "auth_state", "logged_in": True, "is_active": True})
         player.event({"type": "playback_changed", "status": "playing" if playing else "paused"})
         self.encoders = []
+        self.bitrates = []
         self.writer = FakeWriter()
         self.reader = asyncio.StreamReader()
         self.session = audio.Session(player, self._encoder, limit)
         self.task = asyncio.create_task(self.session.run(self.reader, self.writer))
 
-    def _encoder(self):
+    def _encoder(self, bitrate=None):
+        self.bitrates.append(bitrate)
         self.encoders.append(FakeEncoder())
         return self.encoders[-1]
 
@@ -107,6 +109,29 @@ async def test_audio_flows_with_sequence_numbers():
     assert rig.writer.frames == [wire.audio(i, b"p%d" % i) for i in range(3)]
     await rig.send(wire.AUDIO_REQUEST, b"1")  # repeated while streaming: ignored
     assert len(rig.encoders) == 1
+
+
+async def test_a_relay_without_a_quality_gets_the_default_encoder():
+    rig = Rig()
+    await rig.send(wire.AUDIO_REQUEST, b"1 1000")
+    assert rig.bitrates == [None]
+
+
+async def test_the_requested_quality_applies_to_the_next_encoder_run():
+    rig = Rig()
+    await rig.send(wire.AUDIO_REQUEST, b"1 1000 96")
+    await rig.send(wire.AUDIO_REQUEST, b"0 pause")
+    await rig.send(wire.AUDIO_REQUEST, b"1 1000 128")
+    assert rig.bitrates == [96, 128]
+    assert rig.session.limit == 1000
+
+
+async def test_an_unsupported_quality_leaves_the_default():
+    rig = Rig()
+    await rig.send(wire.AUDIO_REQUEST, b"1 1000 64")
+    assert rig.bitrates == [None]
+    await rig.send(wire.AUDIO_REQUEST, b"1 1000 fast")
+    assert rig.session.bitrate is None
 
 
 async def test_stall_pauses_soloist_and_stops_the_encoder():

@@ -31,8 +31,8 @@ async def serve(args: argparse.Namespace) -> int:
     api = spotify.Spotify(args.data)
     browser = browse.Browser(api, player, args.data)
 
-    def encoder() -> audio.Encoder:
-        return audio.Encoder(audio.ffmpeg_args(args.source, args.bitrate))
+    def encoder(bitrate: int | None = None) -> audio.Encoder:
+        return audio.Encoder(audio.ffmpeg_args(args.source, bitrate or args.bitrate))
 
     async def session(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await audio.Session(player, encoder, args.inflight, browser).run(reader, writer)
@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--listen", default=None, help="address to listen on (default all)")
     p.add_argument("--port", type=int, default=PORT)
     p.add_argument("--name", default="Q2", help="Soloist's Spotify Connect name (default Q2)")
-    p.add_argument("--bitrate", type=int, choices=(96, 128, 160), default=160, help="kbit/s")
+    p.add_argument("--bitrate", type=int, choices=(96, 128, 160), default=160, help="kbit/s, unless the relay asks for another")
     p.add_argument(
         "--inflight", type=int, default=2000, help="ms of unacked audio that make a stall"
     )
