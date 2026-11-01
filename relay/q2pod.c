@@ -368,7 +368,9 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
                     publish(text, word, number(text, "position"));
                 }
             } else {
-                held = fresh_wait = 0;
+                /* The old capture's in-flight tail must not reach a later reactivation. */
+                held = 0;
+                fresh_wait = 1;
                 restore_ok = 1;
                 pause_id = pause_active = 0;
                 *bookmark = 0;

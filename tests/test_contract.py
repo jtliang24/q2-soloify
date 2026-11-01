@@ -357,6 +357,35 @@ async def test_phone_pause_and_play_use_the_same_gates(contract):
     await until(lambda: len(children(relay.proc.pid)) == 2)
 
 
+@pytest.mark.parametrize("contract", ["record"], indirect=True)
+async def test_reactivation_discards_old_capture_tail_and_starts_output(contract, tmp_path):
+    from soloify.audio import OggPackets
+
+    relay, peer, base = contract
+    await peer.packets(40)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    await peer.send(wire.STATE, b"state=none\n")  # another Connect device took over
+    await until(lambda: read_state(base).startswith("state=none\n"))
+    await until(lambda: not children(relay.proc.pid))
+    old = (tmp_path / "paused.ogg").read_bytes()
+    # The old capture's in-flight tail, sent before the bridge's halt completed
+    await peer.send(wire.TIMELINE, state(position=30000, token=1))
+    for i in range(20):
+        await peer.send(wire.AUDIO, (40 + i).to_bytes(4, "big") + b"\xfc\xee\xee")
+    # Choosing Q2 again: the bridge sends its state at once, then starts a fresh capture.
+    await peer.send(wire.STATE, state(position=52000, token=2))
+    await peer.send(wire.CAPTURE, (2).to_bytes(4, "big"))
+    await peer.send(wire.TIMELINE, state(position=52000, token=2))
+    for i in range(12):
+        await peer.send(wire.AUDIO, (60 + i).to_bytes(4, "big") + b"\xfc\xff\xfe")
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    assert "state=playing\n" in read_state(base)
+    await asyncio.sleep(0.6)
+    packets = OggPackets().feed((tmp_path / "paused.ogg").read_bytes()[len(old) :])
+    audio = [p for p in packets if not p.startswith((b"OpusHead", b"OpusTags"))]
+    assert audio == [b"\xfc\xff\xfe"] * 12
+
+
 async def test_seek_discards_old_audio_and_metadata(contract):
     relay, peer, base = contract
     await peer.packets(40)
