@@ -25,7 +25,7 @@ Version 2: audio, presentation anchors, immediate pause/rewind, state, covers, c
 | `x` | bridge → relay | completed `c` control bytes, echoed. For skip/seek the previous encoder has ended before this frame. The current cover and a forced state snapshot follow local controls. Pause bookmarks complete with `h`, not `x s`. |
 | `l` | bridge → relay | state lines plus `token=`, immediately before an audio packet's first presented sample. Position comes from its capture timestamp, excluding pre-skip. Token 0 means no reliable source anchor. |
 | `v` | bridge → relay | empty: external Pause event, request immediate local bookmark/drop. `P`: external Play event, request the same ordered local Play gate. |
-| `R` | relay → bridge | u32 pause correlation ID, then `token=...\nposition=...\n`. Empty lines payload means no reliable bookmark. IDs survive reconnect; repeated pending Pause retains the bookmark. |
+| `R` | relay → bridge | u32 pause correlation ID, then `token=...\nposition=...\ntrack=...\n` (`track=` is the heard Spotify id; older relays omit it). Empty lines payload means no reliable bookmark. IDs survive reconnect; repeated pending Pause retains the bookmark. |
 | `h` | bridge → relay | u32 pause ID, success byte (0 or 1), optional UTF-8 diagnostic (at most 512 bytes). Success confirms a paused source restore; only the current ID may open the restore gate. |
 
 `q` carries a correlated Q2SPOT/1 request (relay → bridge); `r` carries its response (bridge → relay). See Browsing below. The relay ignores frame types it does not know.
@@ -76,6 +76,11 @@ three-second timeout. Failed bookmarks remain for the next explicit Play, with
 bridge/relay logs and a local `.pause-error` sidecar; automatic probes cannot retry
 or resume them. Seek/skip/prepared browse-play supersede the bookmark under the
 same control lock. Reconnect retains the bookmark and verified navigation progress.
+Occurrence tokens start from a per-process epoch, so a restarted bridge never reissues
+one. A token it never issued is adopted only when the paused source still holds the
+bookmark's `track=` id, repeat-track is off and its position is within 5 s; it then
+seeks that loaded item in place. The id is compared, never played. Otherwise it
+fails paused until a seek or track selection.
 
 Play sends `c P`. Any failed/pending restore is completed first, capture is primed
 before source Play, actual playing state is confirmed, and only fresh capture is

@@ -142,6 +142,46 @@ async def test_repeat_track_without_queue_movement_cannot_select_an_older_duplic
     assert not any(name == "skip_prev" for name, _ in source.calls)
 
 
+def restarted_bridge(track="a", position=12000, repeat="context"):
+    """A new bridge process, whose timeline never issued the relay's retained token."""
+    player = Player()
+    source = Source(player, (track,), 0)
+    source.word, source.position, source.repeat = "paused", position, repeat
+    source.emit()
+    player.ws = source
+    return player, source, Rewind(player)
+
+
+async def test_restarted_bridge_adopts_the_paused_heard_track_and_issues_a_fresh_token():
+    player, source, rewind = restarted_bridge()
+    rewind.remember(b"\0\0\0\1" + b"token=7\nposition=12500\ntrack=a\n")
+    await rewind.restore()
+    assert source.position == 12500 and source.word == "paused" and not rewind.bookmark.failed
+    assert not any(name.startswith("skip") for name, _ in source.calls)
+    source.word = "playing"
+    source.serial += 1000
+    source.emit()
+    assert player.timeline.current.token not in (0, 7)
+    assert b"track=a\n" in player.timeline.anchor(source.serial + 20)
+
+
+@pytest.mark.parametrize(
+    "payload, change",
+    [
+        (b"token=7\nposition=12500\ntrack=a\n", {"track": "b"}),
+        (b"token=7\nposition=12500\ntrack=a\n", {"repeat": "track"}),
+        (b"token=7\nposition=12500\ntrack=a\n", {"position": 30000}),
+        (b"token=7\nposition=12500\n", {}),  # an older relay's bookmark names no track
+    ],
+)
+async def test_restarted_bridge_refuses_an_unverifiable_bookmark(payload, change):
+    player, source, rewind = restarted_bridge(**change)
+    rewind.remember(b"\0\0\0\1" + payload)
+    with pytest.raises(RestoreError, match="No reliable audible bookmark"):
+        await rewind.restore()
+    assert not any(name == "seek" for name, _ in source.calls)
+
+
 def test_occurrence_tokens_do_not_repeat_across_bridge_processes():
     earlier, _, _ = setup_source(("a", "b", "c"))
     issued = {item.token for item in earlier.timeline.occurrences}

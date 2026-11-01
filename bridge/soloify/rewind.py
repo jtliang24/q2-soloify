@@ -102,11 +102,14 @@ class Bookmark:
     route: list | None = None
     failed: str = ""
     source_uri: str = ""
+    track: str = ""
+    adoptable: bool = False  # issued by an earlier bridge process
 
 
 class Rewind:
     TIMEOUT = 3
     TOTAL_TIMEOUT = 12
+    ADOPT_TOLERANCE = 5000  # a 4 s WAN buffer ahead, plus margin
 
     def __init__(self, player):
         self.player = player
@@ -124,9 +127,13 @@ class Rewind:
         lines = dict(line.split("=", 1) for line in payload[4:].decode().splitlines())
         token = int(lines.get("token", 0))
         position = int(lines.get("position", 0))
+        track = lines.get("track", "")
         occurrence = next(
             (item for item in self.player.timeline.occurrences if item.token == token), None
         )
+        if occurrence and track and occurrence.state.track.id != track:
+            occurrence = None
+        adoptable = bool(token and track and occurrence is None and position >= 0)
         if position < 0 or (
             occurrence
             and occurrence.state.track.duration
@@ -140,7 +147,23 @@ class Rewind:
         ):
             self.bookmark.correlation = payload[:4]  # reconnect retains partial restore progress
             return
-        self.bookmark = Bookmark(payload[:4], occurrence, position)
+        self.bookmark = Bookmark(payload[:4], occurrence, position, track=track)
+        self.bookmark.adoptable = adoptable
+
+    def adopts(self, bookmark, observed):
+        """Whether the paused source still holds an earlier process's heard track.
+
+        The id only verifies the loaded item; it is never played. Repeat-track laps
+        are indistinguishable, so they stay ambiguous.
+        """
+        return (
+            bookmark.adoptable
+            and observed.track is not None
+            and observed.track.id == bookmark.track
+            and observed.repeat != "track"
+            and abs(observed.position() - bookmark.position) <= self.ADOPT_TOLERANCE
+            and (not observed.track.duration or bookmark.position <= observed.track.duration)
+        )
 
     async def command(self, name, **fields):
         self.check()
@@ -241,10 +264,14 @@ class Rewind:
         try:
             await self.command("pause")
             observed = await self.snapshot(lambda state: state.word == "paused")
-            if bookmark.occurrence is None:
+            adopted = bookmark.occurrence is None and self.adopts(bookmark, observed)
+            if bookmark.occurrence is None and not adopted:
                 raise RestoreError("No reliable audible bookmark; select a track or seek")
-            target = bookmark.occurrence
-            if (
+            # An adopted bookmark seeks the loaded item in place, without navigation.
+            target = bookmark.occurrence or Occurrence(0, copy(observed))
+            if adopted:
+                bookmark.route = []
+            elif (
                 not observed.track
                 or not p.timeline.current
                 or observed.track.uri != (bookmark.source_uri or p.timeline.current.state.track.uri)
@@ -338,7 +365,8 @@ class Rewind:
                     and abs(state.position() - bookmark.position) <= 100
                 )
             )
-            p.timeline.current = target
+            # Playback after an adopted bookmark starts this process's own occurrence.
+            p.timeline.current = None if adopted else target
             p.timeline.history.clear()
             bookmark.failed = ""
         except (TimeoutError, ConnectionError, aiohttp.ClientError, RestoreError) as error:

@@ -154,7 +154,7 @@ async def test_source_loss_and_reconnect_retain_frozen_recoverable_bookmark(cont
     controls(base, b"s")  # the known opening, before any output is started
     await until(lambda: peer.bookmarks())
     bookmark = peer.bookmarks()[0]
-    assert bookmark[4:] == b"token=1\nposition=1000\n"
+    assert bookmark[4:] == b"token=1\nposition=1000\ntrack=a\n"
     await peer.restored(False)
     await until(lambda: Path(f"{base}.pause-error").exists())
     frozen = read_state(base)
@@ -298,7 +298,7 @@ async def test_startup_pause_never_starts_output_and_preserves_opening(contract,
     assert children(relay.proc.pid) == []
     controls(base, b"s")
     await until(lambda: peer.bookmarks())
-    assert peer.bookmarks()[-1][4:] == b"token=7\nposition=1234\n"
+    assert peer.bookmarks()[-1][4:] == b"token=7\nposition=1234\ntrack=a\n"
     assert "position=1234\n" in read_state(base)
     await peer.packets(30)  # late audio must not fill/start the cancelled buffer
     await asyncio.sleep(0.1)

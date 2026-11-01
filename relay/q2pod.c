@@ -155,10 +155,13 @@ void q2pod_paused(void) {
     char frozen[TEXT];
     snprintf(frozen, sizeof frozen, "%s", *bookmark ? bookmark : current);
     if (*bookmark) {
-        /* Send only the identity and exact position. The bridge owns immutable track/context
-         * records, so the device never asks it to play an arbitrary supplied URI. */
-        snprintf(bookmark, sizeof bookmark, "token=%llu\nposition=%llu\n",
-                 (unsigned long long)number(frozen, "token"), (unsigned long long)pos);
+        /* Send only the identity, exact position and heard track id. The bridge owns immutable
+         * track/context records and only compares the id with the source's loaded item after
+         * a restart, so the device never asks it to play an arbitrary supplied URI. */
+        char track[64];
+        value(frozen, "track", track, sizeof track);
+        snprintf(bookmark, sizeof bookmark, "token=%llu\nposition=%llu\ntrack=%s\n",
+                 (unsigned long long)number(frozen, "token"), (unsigned long long)pos, track);
     }
     held = 1;
     restore_ok = 0;

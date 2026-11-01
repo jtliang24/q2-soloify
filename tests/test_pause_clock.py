@@ -43,7 +43,7 @@ async def test_open_setup_prepared_running_startup_recovers(contract, card, owne
     await asyncio.sleep(0.08)
     controls(base, b"s")
     await until(lambda: peer.bookmarks())
-    assert peer.bookmarks()[-1][4:] == b"token=71\nposition=12200\n"
+    assert peer.bookmarks()[-1][4:] == b"token=71\nposition=12200\ntrack=a\n"
     assert not children(relay.proc.pid)
 
 
@@ -69,7 +69,7 @@ async def test_hardware_epoch_spans_trimmed_capture_and_track_change(contract):
     await asyncio.sleep(0.08)
     controls(base, b"s")
     await until(lambda: peer.bookmarks())
-    assert peer.bookmarks()[-1][4:] == b"token=72\nposition=3107\n"
+    assert peer.bookmarks()[-1][4:] == b"token=72\nposition=3107\ntrack=b\n"
     assert "track=b\n" in read_state(base)
 
 
@@ -109,7 +109,7 @@ async def test_repeated_resume_starts_new_hardware_epoch(contract):
         await asyncio.sleep(0.08)
         controls(base, b"s")
         await until(lambda cycle=cycle: len(peer.bookmarks()) == cycle + 1)
-        assert peer.bookmarks()[-1][4:] == b"token=71\nposition=12200\n"
+        assert peer.bookmarks()[-1][4:] == b"token=71\nposition=12200\ntrack=a\n"
         assert not children(relay.proc.pid)
 
 
@@ -135,7 +135,7 @@ async def test_hardware_cursor_not_queued_or_wall_clock(contract, rate, card, de
     await asyncio.sleep(0.05)
     controls(base, b"s")
     await until(lambda: peer.bookmarks())
-    assert peer.bookmarks()[-1][4:] == b"token=71\nposition=12200\n"
+    assert peer.bookmarks()[-1][4:] == b"token=71\nposition=12200\ntrack=a\n"
     assert "track=a\n" in read_state(base)
     assert "position=12200\n" in read_state(base)
     assert not children(relay.proc.pid)
