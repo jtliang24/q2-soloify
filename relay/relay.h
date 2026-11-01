@@ -23,6 +23,8 @@ struct endpoint {
     int pinned, lan, buffer_ms;
 };
 int remote_load(const char *path, struct endpoint *eps, int max);
+/* The integer in .soloify/NAME, a setting the Q2 Pod firmware writes; 0 if absent or invalid */
+int remote_setting(const char *remote, const char *name);
 
 /* tls.c */
 struct link { int fd; SSL_CTX *ctx; SSL *ssl; };

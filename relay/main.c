@@ -1,7 +1,9 @@
 /* q2-soloify [-v] [-q] [-b MS] [-r REMOTE]: the card's relay. It dials the endpoints in REMOTE
  * (./remote) in order, says hello, asks for audio and plays it; on a dead link it reconnects, with
- * a backoff of 1 to 15 s while every endpoint fails. -b overrides the buffer target, otherwise
- * the endpoint's buffer=, else 1 s on the LAN and 4 s beyond it. -q enables the device contract. */
+ * a backoff of 1 to 15 s while every endpoint fails. The buffer target is -b, else .delay beside
+ * REMOTE (the firmware's Delay setting, in ms), else the endpoint's buffer=, else 1 s on the LAN
+ * and 4 s beyond it. .quality (96, 128 or 160) asks the bridge for that bitrate. -q enables the
+ * device contract. */
 #include "relay.h"
 
 #define HELLO_MS 5000
@@ -126,13 +128,14 @@ static void stats(const struct endpoint *ep, unsigned received) {
 }
 
 /* One connection, until its link dies */
-static void session(const struct endpoint *ep, int target) {
+static void session(const struct endpoint *ep, int target, int quality) {
     unsigned received = 0, acked = 0;
     uint64_t now = now_ms(), last_rx = now, probe = now, ack = now + ACK_MS, last_ack = now;
     const char *every = getenv("SOLOIFY_STATS_MS"); /* for tests */
     int stats_ms = every ? strtol(every, NULL, 10) : STATS_MS;
     uint64_t next_stats = now + stats_ms;
-    say("connected to %s:%s, buffer %d ms", ep->host, ep->port, target);
+    if (quality) say("connected to %s:%s, buffer %d ms, quality %d kbit/s", ep->host, ep->port, target, quality);
+    else say("connected to %s:%s, buffer %d ms", ep->host, ep->port, target);
     audio_start(target);
     connected = 1;
     q2pod_link(1);
@@ -142,8 +145,10 @@ static void session(const struct endpoint *ep, int target) {
         uint64_t wake;
         now = now_ms();
         if (now >= probe) {
-            char want[16];
-            if (q2pod_wants()) wire_send(&wire, 'A', want, snprintf(want, sizeof want, "1 %d", target));
+            char want[24];
+            int len = snprintf(want, sizeof want, "1 %d", target);
+            if (quality) len += snprintf(want + len, sizeof want - len, " %d", quality);
+            if (q2pod_wants()) wire_send(&wire, 'A', want, len);
             probe = now + PROBE_MS;
         }
         /* The timer moves on even with nothing to ack: left in the past, it would wake the loop at
@@ -232,7 +237,12 @@ int main(int argc, char **argv) {
                 continue;
             }
             up = 1;
-            session(&eps[i], target_opt ? target_opt : eps[i].buffer_ms ? eps[i].buffer_ms : eps[i].lan ? 1000 : 4000);
+            /* Read for every connection, so a setting the firmware changed applies at the next one */
+            int delay = remote_setting(path, ".delay"), quality = remote_setting(path, ".quality");
+            if (delay < 200 || delay > 20000) delay = 0;
+            if (quality != 96 && quality != 128 && quality != 160) quality = 0;
+            session(&eps[i], target_opt ? target_opt : delay ? delay : eps[i].buffer_ms ? eps[i].buffer_ms : eps[i].lan ? 1000 : 4000,
+                    quality);
         }
         if (up) {
             backoff = 1000;

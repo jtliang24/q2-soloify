@@ -80,3 +80,22 @@ int remote_load(const char *path, struct endpoint *eps, int max) {
     }
     return count;
 }
+
+/* A card setting beside REMOTE (.delay, .quality): one integer on a line, as the firmware writes
+ * it. 0 when the file is absent or unreadable, so the caller falls back to its default. */
+int remote_setting(const char *remote, const char *name) {
+    char path[256], buf[16];
+    int len = strlen(remote), dir = len, fd, r, n = 0, v = 0;
+    while (dir && remote[dir - 1] != '/') --dir;
+    if (dir + strlen(name) >= sizeof path) return 0;
+    memcpy(path, remote, dir);
+    memcpy(path + dir, name, strlen(name) + 1);
+    if ((fd = open(path, 0)) < 0) return 0;
+    r = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (r <= 0) return 0;
+    buf[r] = 0;
+    for (; n < r && buf[n] >= '0' && buf[n] <= '9' && v < 100000; ++n) v = v * 10 + buf[n] - '0';
+    if (!n || (n < r && buf[n] != '\n')) return 0;
+    return v;
+}

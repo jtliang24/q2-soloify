@@ -106,6 +106,56 @@ async def test_unreadable_line_is_skipped(tmp_path, rig):
         await bridge.stop()
 
 
+async def _connected(tmp_path, rig, files, line_suffix="", *args):
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    bridge = await Bridge(tmp_path / "data").start()
+    relay = await rig([bridge.line() + line_suffix], *args)
+    return bridge, await relay.expect("connected to")
+
+
+async def test_delay_setting_beats_the_endpoint_buffer(tmp_path, rig):
+    bridge, line = await _connected(tmp_path, rig, {".delay": "2000\n"}, " buffer=1500")
+    try:
+        assert "buffer 2000 ms" in line and "quality" not in line
+        await until(lambda: bridge.sessions and bridge.sessions[0].limit == 2000)
+    finally:
+        await bridge.stop()
+
+
+async def test_b_option_beats_the_delay_setting(tmp_path, rig):
+    bridge, line = await _connected(tmp_path, rig, {".delay": "2000"}, "", "-b", "3000")
+    await bridge.stop()
+    assert "buffer 3000 ms" in line
+
+
+@pytest.mark.parametrize("text", ["", "fast", "100", "30000", "-5", "2000x"])
+async def test_an_invalid_delay_setting_is_ignored(tmp_path, rig, text):
+    bridge, line = await _connected(tmp_path, rig, {".delay": text}, " buffer=1500")
+    await bridge.stop()
+    assert "buffer 1500 ms" in line
+
+
+async def test_quality_setting_reaches_the_bridge(tmp_path, rig):
+    bridge, line = await _connected(tmp_path, rig, {".quality": "96\n"})
+    try:
+        assert "quality 96 kbit/s" in line
+        await until(lambda: bridge.sessions and bridge.sessions[0].bitrate == 96)
+    finally:
+        await bridge.stop()
+
+
+@pytest.mark.parametrize("text", ["", "64", "fast", "960"])
+async def test_an_invalid_quality_setting_is_not_sent(tmp_path, rig, text):
+    bridge, line = await _connected(tmp_path, rig, {".quality": text})
+    try:
+        assert "quality" not in line
+        await until(lambda: bridge.sessions and bridge.sessions[0].streaming)
+        assert bridge.sessions[0].bitrate is None
+    finally:
+        await bridge.stop()
+
+
 def _ca_and_leaf(folder, name):
     """A CA, and a leaf for name signed by it, as the bridge's certificate and key."""
     now = datetime.datetime.now(datetime.UTC)
