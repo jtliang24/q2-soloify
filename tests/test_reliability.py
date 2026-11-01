@@ -430,16 +430,26 @@ async def test_resume_trims_timestamped_paused_samples_with_bounded_decoder_hist
         await asyncio.gather(rig.task, return_exceptions=True)
 
 
-async def test_external_resume_starts_capture_without_waiting_for_periodic_probe():
+async def test_external_resume_after_bare_pause_uses_the_relay_play_gate():
     rig = Rig(limit=1000)
+    recorded = []
+    write = rig.writer.write
+
+    def record(data):
+        recorded.append(data)
+        write(data)
+
+    rig.writer.write = record
     await rig.send(wire.AUDIO_REQUEST, b"1")
     try:
         await rig.packets(40)  # old ACKs may still be in flight during a rapid resume
         await rig.send(wire.CONTROL, b"s")
         rig.session.player.event({"type": "playback_changed", "status": "playing"})
         await _settle()
-        # A bare c s has no hardware bookmark; real device pause uses R instead.
-        assert len(rig.encoders) == 2 and rig.session.streaming
+        # A bare c s has no hardware bookmark; real device pause uses R instead. The relay
+        # was sent paused, so a Q2 Pod relay needs its local Play gate.
+        assert wire.frame(wire.PAUSE_NOW, b"P") in recorded
+        assert len(rig.encoders) == 1 and not rig.session.streaming
         assert rig.soloist.calls == [("pause",)]
     finally:
         rig.task.cancel()

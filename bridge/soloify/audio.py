@@ -417,6 +417,14 @@ class Session:
             # Ask the relay to order Play after its bookmark. Never capture a phone's
             # premature Play at the source's still-ahead position.
             self.writer.write(wire.frame(wire.PAUSE_NOW, b"P"))
+        elif (
+            self.player.transition_kind == "playback_changed"
+            and self.player.sent
+            and self.player.sent[0][0] == "paused"
+        ):
+            # The relay holds a paused state it was sent (Q2 activated paused) and only
+            # its local Play gate releases it. A queried snapshot is not a phone Play.
+            self.writer.write(wire.frame(wire.PAUSE_NOW, b"P"))
         else:
             task = asyncio.create_task(self._playback_changed(playing, self.generation))
             self.control_tasks.add(task)
@@ -694,6 +702,9 @@ class Session:
                 if payload[:1] == b"P":
                     self.check_intent(revision)
                     self.rewind.bookmark = None
+                    # A relay that never requested audio (Q2 activated paused) asks after
+                    # this boundary; an earlier source pause must not block that capture.
+                    self.capture_blocked = False
             except Superseded:
                 if primed or capture or self.capture is not None:
                     await self._halt("pause")

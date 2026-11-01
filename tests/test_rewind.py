@@ -653,6 +653,53 @@ async def test_reconnect_snapshot_does_not_retry_failed_bookmark_or_play():
         await asyncio.gather(rig.task, return_exceptions=True)
 
 
+@pytest.mark.parametrize("explicit", [True, False])
+async def test_phone_play_after_paused_activation_uses_the_local_play_gate(explicit):
+    rig = Rig(playing=False)  # Q2 was activated paused: the relay holds that state
+    await _settle()
+    player = rig.session.player
+    writer = rig.session.writer = Writer()
+    try:
+        assert player.sent[0][0] == "paused" and not rig.session.rewind.bookmark
+        if explicit:
+            player.event({"type": "playback_changed", "status": "playing"})
+        else:  # a queried snapshot on a new source connection is not a phone Play
+            player.event({"type": "gone"})
+            player.event({"type": "auth_state", "logged_in": True, "is_active": True})
+            player.event({"type": "playback_state", "status": "playing", "is_active": True})
+        await _settle()
+        assert (wire.frame(wire.PAUSE_NOW, b"P") in writer.data) == explicit
+        assert not rig.encoders  # capture waits for the relay's ordered c P
+    finally:
+        rig.task.cancel()
+        await asyncio.gather(rig.task, return_exceptions=True)
+
+
+async def test_play_after_paused_activation_unblocks_capture_for_the_relay_request():
+    rig = Rig(playing=False)
+    player = rig.session.player
+    player.event({"type": "device_changed", "is_active": False})  # another device plays
+    await _settle()
+    # Activation: Soloist reports the paused status just before the device change.
+    player.event({"type": "playback_changed", "status": "paused"})
+    player.event({"type": "device_changed", "is_active": True})
+    await _settle()
+    writer = rig.session.writer = Writer()
+    try:
+        assert player.sent[0][0] == "paused"
+        player.event({"type": "playback_changed", "status": "playing"})
+        await _settle()
+        assert wire.frame(wire.PAUSE_NOW, b"P") in writer.data
+        await rig.send(wire.CONTROL, b"P")  # the relay's ordered local Play
+        await until(lambda: not rig.session.control_tasks)
+        await rig.send(wire.AUDIO_REQUEST, b"1")  # never requested while Q2 was inactive
+        await until(lambda: rig.session.streaming, timeout=1)
+        assert len(rig.encoders) == 1
+    finally:
+        rig.task.cancel()
+        await asyncio.gather(rig.task, return_exceptions=True)
+
+
 async def test_phone_play_during_pause_shutdown_is_ordered_after_bookmark():
     rig = Rig(limit=1000)
     await rig.send(wire.AUDIO_REQUEST, b"1")
