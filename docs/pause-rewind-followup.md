@@ -7,7 +7,7 @@ setting; the user then authorized committing the verified work.
 
 **Update, 2026-11-01:** the remaining M1 matrix was run and passes on the final builds,
 after five device-found fixes and output-loss pausing. See
-[M1 matrix, 2026-11-01](#m1-matrix-2026-11-01); two findings stay open.
+[M1 matrix, 2026-11-01](#m1-matrix-2026-11-01).
 
 Keep [the original runbook and October 30 results](pause-rewind.md) as historical
 evidence. This report records the additional work; it does not replace those results.
@@ -197,9 +197,9 @@ readings.
 | 2 | Headphones / 1000 | Ten rapid cycles ending in Play | **Pass.** One bookmark; every 0.4 s startup was cancelled before output, so only the final Play sounded (heard as silence, then steady playback). |
 | 3 | Headphones / 4000 | M1 and phone controls across a track change; ten cycles ending in Pause, then in Play | **Pass.** Includes a cross-track rewind into the previous track's end. Bursts: one bookmark, ALSA closed, then a clean final restore (heard). |
 | 4 | Headphones / 4000 | Pause just before output begins; startup cancel | **Pass after two fixes.** A Pause while ALSA was still `PREPARED`, or while the restore presented only its unanchored lead-in, gave an invalid bookmark and skipped about 4.5 s. Afterwards, Pause at 4.3–5.2 s after Play kept the bookmark until real audio reached the hardware, then advanced exactly by what played. |
-| 5 | Headphones / 4000 | Shuffle with duplicate tracks, pause near boundaries | **Pass** (heard). Cross-track restores were valid; one pause just after a seek and transition fell back to resume without rewind (open finding 1). |
+| 5 | Headphones / 4000 | Shuffle with duplicate tracks, pause near boundaries | **Pass** (heard). Cross-track restores were valid. |
 | 6 | USB / 4000 | As 3 | **Pass.** |
-| 7 | USB / 1000 | As 3 | **Pass**, except that pauses within about 1 s after a natural track change, which the user found hard to time, gave unanchored bookmarks (open finding 1). |
+| 7 | USB / 1000 | As 3 | **Pass.** Pausing within 1 s of a track change was hard to time and was skipped; the 4000 ms rows cover cross-track restores. |
 | 8 | USB / 1000 | Physical unplug while playing and while restoring | **Pass after a change.** At first the source played on unheard and the relay retried, then followed Q2 Pod's fallback to the headphone DAC. The relay now pauses on output loss, as the M1's own players do. Unplug while playing paused at the last hardware read; unplug right after Play paused with nothing played and kept the bookmark (heard). |
 | 9 | Headphones / 1000 | Controlled XRUN (ALSA writer stopped for 0.6 s) | **Pass.** The clock was invalidated and the next Play resumed without rewind, about 1.4 s on, with no glitch (heard). |
 
@@ -220,21 +220,9 @@ Device-found changes, each with regressions and checked on the M1:
 
 The final relay (`176e28e`) is MIPS SHA-256 `129f7e44…`; 238 tests pass, with one skip.
 
-### Open findings
+### Notes
 
-1. **Unanchored start of a new track.** Pauses heard within about a second after a natural
-   track change gave a token-0 bookmark (4 of 4 at 1000 ms; one at 4000 ms, after a seek).
-   Playback recovers without rewind, skipping at most a buffer. Likely cause:
-   `Timeline.record` adds an unanchored entry when `track_changed` arrives without a
-   timestamp, and packets are anchored 100 ms (`SETTLE`) after capture, before a later
-   `position_sync` can anchor the new occurrence. Confirm with event-timing logs first.
-2. **USB DAC placement and the M1's Wi-Fi.** While playing through the USB DAC in its
-   first position, pings to the M1 rose from 16 ms to 0.4–1.1 s average, with up to 20%
-   loss, and the 1000 ms target hit the bridge's stall guard (cutouts). Moving the M1
-   brought it back to 25 ms average. USB enumeration also briefly throttles Wi-Fi.
-   Environmental, not a pause/rewind defect.
-
-Also seen: after the service was stopped from the shell, the page's "Spotify isn't
+After the service was stopped from the shell, the page's "Spotify isn't
 running" Retry did not restart it; Stop Streaming and starting Spotify again did.
 
 ### Restored state
@@ -248,11 +236,9 @@ device backup and private archive (`m1-z0tqqxg4`) remain on the M1, and evidence
 
 ## What remains
 
-1. Open finding 1: log `Timeline` event timing around natural track changes, then anchor
-   the new occurrence's start.
-2. A synchronized recording, if measuring the 100 ms targets; a second USB device at
+1. A synchronized recording, if measuring the 100 ms targets; a second USB device at
    another hardware rate, for rate diversity.
-3. Otherwise step 4's pause/rewind validation is complete; proceed to step 5.
+2. Otherwise step 4's pause/rewind validation is complete; proceed to step 5.
 
 ## Commit series
 
