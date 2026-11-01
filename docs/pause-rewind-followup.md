@@ -5,6 +5,10 @@ Physical validation is **partial**, not a completed M1 certification. Work stopp
 at the user's request after restoring the device and the laptop's temporary network
 setting; the user then authorized committing the verified work.
 
+**Update, 2026-11-01:** the remaining M1 matrix was run and passes on the final builds,
+after five device-found fixes and output-loss pausing. See
+[M1 matrix, 2026-11-01](#m1-matrix-2026-11-01); two findings stay open.
+
 Keep [the original runbook and October 30 results](pause-rewind.md) as historical
 evidence. This report records the additional work; it does not replace those results.
 
@@ -176,28 +180,79 @@ logs and must not be committed. Temporary diagnostic programs in these directori
 use existing relay protocols; they are not firmware/UI certification. Their fixture
 URIs and assumptions must be revalidated before reuse.
 
+## M1 matrix, 2026-11-01
+
+A minimal retest: rows already shown working on the earlier relay were not repeated,
+and there was no synchronized recording. The laptop's bridge ran on Ethernet with the
+port opened temporarily; the M1 ran the matching MIPS relay in the `.spotify`
+compatibility route from a fresh, verified backup. Each listening verdict is the
+user's; each protocol verdict rests on relay/bridge logs and two advancing `hw_ptr`
+readings.
+
+| # | Config | Test | Result |
+|---|---|---|---|
+| 1 | Headphones / 1000 | Cold reconnect priming, bridge restart | **Pass after fixes.** A bridge restart found four defects, fixed and rechecked: a reactivated relay deadlocked on the old capture's tail; a new bridge reissued an old process's occurrence tokens; it could not adopt the relay's paused bookmark; and phone Play after a paused activation bypassed the relay's fresh-capture gate. A bounded failure ("Source is no longer active") stays frozen and silent. |
+| 1a | Headphones / 1000 | Link-only reconnect: pause, relay frozen 25 s past the bridge's idle drop, then Play | **Pass.** Same bridge process; the bookmark survived and resumed where paused (heard). |
+| 1b | Headphones / 1000 | Pause, restart the bridge, reselect the device, Play | **Pass.** Refused before reselection, then the new bridge adopted the bookmark and resumed where paused (heard). |
+| 2 | Headphones / 1000 | Ten rapid cycles ending in Play | **Pass.** One bookmark; every 0.4 s startup was cancelled before output, so only the final Play sounded (heard as silence, then steady playback). |
+| 3 | Headphones / 4000 | M1 and phone controls across a track change; ten cycles ending in Pause, then in Play | **Pass.** Includes a cross-track rewind into the previous track's end. Bursts: one bookmark, ALSA closed, then a clean final restore (heard). |
+| 4 | Headphones / 4000 | Pause just before output begins; startup cancel | **Pass after two fixes.** A Pause while ALSA was still `PREPARED`, or while the restore presented only its unanchored lead-in, gave an invalid bookmark and skipped about 4.5 s. Afterwards, Pause at 4.3–5.2 s after Play kept the bookmark until real audio reached the hardware, then advanced exactly by what played. |
+| 5 | Headphones / 4000 | Shuffle with duplicate tracks, pause near boundaries | **Pass** (heard). Cross-track restores were valid; one pause just after a seek and transition fell back to resume without rewind (open finding 1). |
+| 6 | USB / 4000 | As 3 | **Pass.** |
+| 7 | USB / 1000 | As 3 | **Pass**, except that pauses within about 1 s after a natural track change, which the user found hard to time, gave unanchored bookmarks (open finding 1). |
+| 8 | USB / 1000 | Physical unplug while playing and while restoring | **Pass after a change.** At first the source played on unheard and the relay retried, then followed Q2 Pod's fallback to the headphone DAC. The relay now pauses on output loss, as the M1's own players do. Unplug while playing paused at the last hardware read; unplug right after Play paused with nothing played and kept the bookmark (heard). |
+| 9 | Headphones / 1000 | Controlled XRUN (ALSA writer stopped for 0.6 s) | **Pass.** The clock was invalidated and the next Play resumed without rewind, about 1.4 s on, with no glitch (heard). |
+
+Deferred: the 100 ms silence/alignment targets (no synchronized recording) and physical
+rate diversity (no second USB device at another rate).
+
+Device-found changes, each with regressions and checked on the M1:
+
+- `f8c6f08` `fix(relay): discard the old capture tail after source loss`
+- `3013074` `fix(streaming): never reissue occurrence tokens across bridge restarts`
+- `25fd9e1` `feat(streaming): adopt a restarted bridge's paused bookmark`
+- `d2f9327` `fix(streaming): route phone Play after a paused activation through the relay gate`
+- `92705c2` `feat(streaming): resume without rewind when the bookmark is unreliable` (the
+  user's rule: replaying or skipping a few seconds beats a Play that does nothing)
+- `8e3f332` `fix(relay): bookmark the first fed sample while the hardware fills`
+- `ce9f50c` `fix(relay): keep the restored bookmark until a restore is audible`
+- `176e28e` `feat(relay): pause when the output is lost`
+
+The final relay (`176e28e`) is MIPS SHA-256 `129f7e44…`; 238 tests pass, with one skip.
+
+### Open findings
+
+1. **Unanchored start of a new track.** Pauses heard within about a second after a natural
+   track change gave a token-0 bookmark (4 of 4 at 1000 ms; one at 4000 ms, after a seek).
+   Playback recovers without rewind, skipping at most a buffer. Likely cause:
+   `Timeline.record` adds an unanchored entry when `track_changed` arrives without a
+   timestamp, and packets are anchored 100 ms (`SETTLE`) after capture, before a later
+   `position_sync` can anchor the new occurrence. Confirm with event-timing logs first.
+2. **USB DAC placement and the M1's Wi-Fi.** While playing through the USB DAC in its
+   first position, pings to the M1 rose from 16 ms to 0.4–1.1 s average, with up to 20%
+   loss, and the 1000 ms target hit the bridge's stall guard (cutouts). Moving the M1
+   brought it back to 25 ms average. USB enumeration also briefly throttles Wi-Fi.
+   Environmental, not a pause/rewind defect.
+
+Also seen: after the service was stopped from the shell, the page's "Spotify isn't
+running" Retry did not restart it; Stop Streaming and starting Spotify again did.
+
+### Restored state
+
+Card files, modes and absences match the backup (`RESTORATION_VERIFIED`); ALSA was
+closed, with no helpers, and nothing listened on the bridge port. The user reset the
+firewall. `config.ini` differs from the preflight copy only in settings the user
+changed during the session (volume, and the USB DAC output); they were kept. The
+device backup and private archive (`m1-z0tqqxg4`) remain on the M1, and evidence in
+`build/pause-rewind-m1-z0tqqxg4/`, which must not be committed.
+
 ## What remains
 
-1. Review the implementation commits and this handoff. The last cold-reconnect priming
-   condition has only offline verification; begin hardware follow-up there. Pause,
-   reconnect without an automatic Play, then explicitly Play. Confirm capture readiness
-   while the source is still paused, a fresh capture header, the verified bookmark,
-   advancing output, and bounded failure/retry.
-2. With a stable verified link and fresh private backup, repeat headphones/4000 ms
-   and USB/1000 and 4000 ms using the current matching builds. Include track changes,
-   hardware/phone controls, ten rapid cycles and both final Pause and final Play;
-   listen beyond each configured buffer plus several seconds. Recheck headphones/1000
-   ms after the final condition as part of the complete matrix.
-3. Continue the deferred matrix on those configurations: natural boundaries and
-   duplicate occurrence identity, shuffle/repeat, startup/refill cancellation,
-   source outage/reconnect/retry, menus, and seek/skip/browse during restoration.
-   A real just-before-output threshold race, physical USB unplug, and controlled
-   hardware-pointer reset have not been completed. Offline fault injection is separate evidence.
-4. Make a synchronized recording if measuring the 100 ms targets. A second USB device
-   at another hardware rate is still needed for physical rate diversity.
-5. Restore and verify files, absences, modes, volume/output/settings, source options,
-   services and any temporary network changes before publishing new results. Preserve
-   current settings at the next session; do not blindly force this session's volume 18.
+1. Open finding 1: log `Timeline` event timing around natural track changes, then anchor
+   the new occurrence's start.
+2. A synchronized recording, if measuring the 100 ms targets; a second USB device at
+   another hardware rate, for rate diversity.
+3. Otherwise step 4's pause/rewind validation is complete; proceed to step 5.
 
 ## Commit series
 
