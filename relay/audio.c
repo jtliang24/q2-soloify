@@ -8,6 +8,9 @@
 #define TRIM_AFTER_MS 30000
 #define LEAD_MS 300
 #define HISTORY 4 /* 80 ms decoder convergence when resuming partway through a run */
+#define OUTPUT_WAIT_MS 3000 /* after a player exits unheard, for output to start */
+#define HEARD_MS 500 /* the newest hardware read that can still bookmark a lost output */
+#define ROUTE_MS 200 /* how often to check the selected output device */
 
 struct prefix { unsigned skip; int n; unsigned char data[]; };
 static unsigned char ring[SLOTS][SLOT_BYTES], page[8192];
@@ -27,6 +30,12 @@ static unsigned underruns, trims, drops, sinks;
 static int enabled = 1, fresh_required, fresh_capture;
 static uint64_t rendered_base;
 static int rendered_started, rendered_invalid;
+/* The last presentation sample a hardware read confirmed, and an unheard run of players:
+ * since its first player's exit, and its first fed sample. */
+static uint64_t heard, heard_at, unheard_exit, unheard_base, route_at;
+static char route[64]; /* the output device when Play enabled audio */
+static int route_set;
+static int output_gone;
 static const char *bookmark_reason = "startup";
 const char *audio_clock_reason(void) { return bookmark_reason; }
 
@@ -61,6 +70,47 @@ static void stop_sink(void) {
     fd = -1, feeding = npage = off = ending = 0;
     active_gen = 0;
     if (rendered_started) rendered_invalid = 1;
+}
+static uint64_t presented(uint64_t frames, unsigned hz) {
+    /* Avoid a compiler runtime for 64-bit division on the stock MIPS link. */
+    uint64_t ms = 0, rem = 0;
+    for (int bit = 63; bit >= 0; --bit) {
+        rem = rem * 2 + ((frames >> bit) & 1);
+        ms <<= 1;
+        if (rem >= hz) rem -= hz, ms |= 1;
+    }
+    ms = ms * 1000 + (unsigned)rem * 1000 / hz;
+    return sample_ms(rendered_base) + ms;
+}
+/* Q2 Pod moves a removed USB DAC's output to the headphone DAC, where a retrying player
+ * would otherwise go on unasked: a device named when Play enabled audio must stay. A
+ * device named later (none is the headphone DAC) is adopted, not a loss. */
+static int route_moved(void) {
+    char selected[64];
+    if (!q2pod_route(selected, sizeof selected)) return 0;
+    if (!route_set || !*route) {
+        memcpy(route, selected, sizeof route);
+        route_set = 1;
+        return 0;
+    }
+    return strcmp(selected, route) != 0;
+}
+static void lost(const char *why) {
+    say("output lost: %s", why);
+    output_gone = 1;
+    q2pod_output_lost(); /* without Q2 Pod, the sink just restarts */
+    output_gone = 0;
+    unheard_exit = 0;
+    if (sink_player()) stop_sink();
+}
+static void sink_gone(const char *how) {
+    say("the sink %s", how);
+    if (sink_established()) {
+        lost(how);
+        return;
+    }
+    if (!unheard_exit) unheard_exit = now_ms();
+    stop_sink();
 }
 
 /* Decode genuine history rather than restarting predictive Opus state on an arbitrary
@@ -109,9 +159,14 @@ static void start_feeding(void) {
     if (level_ms() > target + TRIM_OVER_MS) trim("backlog");
     if (fd < 0) {
         int existed = sink_player();
+        if (!existed && route_moved()) {
+            lost("output changed");
+            return;
+        }
         if ((fd = sink_start()) < 0) { say("can't start the sink"); return; }
         if (!existed) {
             rendered_base = received - buffered;
+            if (!unheard_exit) unheard_base = rendered_base;
             rendered_started = 1;
             rendered_invalid = 0;
             ++sinks;
@@ -183,7 +238,7 @@ int audio_pollfd(struct pollfd *pfd) {
     return 1;
 }
 void audio_service(short revents) {
-    if (revents & (POLLERR | POLLHUP)) { say("the sink went"); stop_sink(); return; }
+    if (revents & (POLLERR | POLLHUP)) { sink_gone("went"); return; }
     while (feeding) {
         if (off == npage) {
             if (ending) {
@@ -209,7 +264,7 @@ void audio_service(short revents) {
         }
         int w = write(fd, page + off, npage - off);
         if (w < 0) {
-            if (relay_errno != EAGAIN && relay_errno != EINTR) { say("the sink went"); stop_sink(); }
+            if (relay_errno != EAGAIN && relay_errno != EINTR) sink_gone("went");
             return;
         }
         off += w;
@@ -221,8 +276,18 @@ void audio_tick(void) {
     unsigned hz;
     /* Observe resets/XRUNs between controls. Missing startup proc entries are allowed;
      * bookmarking itself still requires a successful hardware read. */
-    if (rendered_started && sink_player()) sink_rendered(&cursor, &hz);
-    if (sink_player() && sink_exited()) { say("the sink exited"); stop_sink(); }
+    if (rendered_started && sink_player()) {
+        if (sink_rendered(&cursor, &hz)) {
+            if (!rendered_invalid) heard = presented(cursor, hz), heard_at = now;
+            unheard_exit = 0;
+        } else if (sink_lost()) lost("hardware gone");
+    }
+    if (sink_player() && sink_exited()) sink_gone("exited");
+    if (unheard_exit && now - unheard_exit > OUTPUT_WAIT_MS) lost("output unavailable");
+    if (sink_player() && now - route_at >= ROUTE_MS) {
+        route_at = now;
+        if (route_moved()) lost("output changed");
+    }
     if (sink_player() && !feeding && now - idle_since > SINK_IDLE_MS) stop_sink();
     if (feeding && level_ms() > target + TRIM_OVER_MS) {
         if (!over_since) over_since = now;
@@ -233,6 +298,7 @@ void audio_tick(void) {
 }
 void audio_enable(int on) {
     if (!on) fresh_required = 1, fresh_capture = 0;
+    if (on != enabled) route_set = 0, route_moved();
     enabled = on;
     if (!on) audio_clear();
 }
@@ -246,6 +312,11 @@ int audio_bookmark(uint64_t *sample) {
         *sample = sample_ms(received - buffered);
         return 1; /* Partial startup: the first pending presentation sample. */
     }
+    /* A lost output whose players never started was heard nowhere past their first sample. */
+    if (output_gone && !sink_established()) {
+        *sample = sample_ms(unheard_exit ? unheard_base : rendered_base);
+        return 1;
+    }
     uint64_t frames;
     unsigned hz;
     if (rendered_invalid) { bookmark_reason = "discarded presentation samples"; return 0; }
@@ -255,18 +326,15 @@ int audio_bookmark(uint64_t *sample) {
             *sample = sample_ms(rendered_base);
             return 1;
         }
+        /* Unplugged: heard up to its last hardware read, a tick before. */
+        if (output_gone && heard_at && now_ms() - heard_at <= HEARD_MS && heard <= audio_received()) {
+            *sample = heard;
+            return 1;
+        }
         bookmark_reason = sink_clock_reason();
         return 0;
     }
-    /* Avoid a compiler runtime for 64-bit division on the stock MIPS link. */
-    uint64_t ms = 0, rem = 0;
-    for (int bit = 63; bit >= 0; --bit) {
-        rem = rem * 2 + ((frames >> bit) & 1);
-        ms <<= 1;
-        if (rem >= hz) rem -= hz, ms |= 1;
-    }
-    ms = ms * 1000 + (unsigned)rem * 1000 / hz;
-    *sample = sample_ms(rendered_base) + ms;
+    *sample = presented(frames, hz);
     if (*sample > audio_received()) { bookmark_reason = "pointer beyond capture timeline"; return 0; }
     return 1;
 }
@@ -276,6 +344,7 @@ void audio_clear(void) {
     received = buffered = fed_samples = over_since = 0;
     rendered_base = 0;
     rendered_started = rendered_invalid = 0;
+    heard_at = unheard_exit = 0;
     for (int i = 0; i < SLOTS; ++i) {
         free(prefixes[i]); prefixes[i] = NULL;
         lens[i] = 0;

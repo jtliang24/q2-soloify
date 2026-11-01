@@ -21,6 +21,8 @@ static const char *clock_reason = "unavailable hardware";
 const char *sink_clock_reason(void) { return clock_reason; }
 /* Our own OPEN/SETUP/PREPARED substream before its first RUNNING pointer has presented nothing. */
 int sink_unstarted(void) { return !pointer_seen && !pointer_bad && !strcmp(clock_reason, "startup state"); }
+int sink_established(void) { return pointer_seen; }
+int sink_lost(void) { return !strcmp(clock_reason, "lost hardware"); }
 static int clock_fail(const char *reason, int fatal) {
     if (strcmp(clock_reason, reason))
         say("hardware clock reason=%s group=%d hardware=%s pointer=%llu rate=%u established=%d",
@@ -62,7 +64,8 @@ int sink_rendered(uint64_t *frames, unsigned *rate) {
     if (pointer_bad) return 0;
     if (group <= 0) return clock_fail("unavailable hardware", 0);
     snprintf(path, sizeof path, "%s/pcm", root);
-    if (!proc_read(path, list, sizeof list)) return clock_fail("unavailable hardware", pointer_seen);
+    if (!proc_read(path, list, sizeof list))
+        return clock_fail(pointer_seen ? "lost hardware" : "unavailable hardware", pointer_seen);
     int found = 0;
     int other_owner = 0;
     uint64_t cursor = 0;
@@ -105,7 +108,10 @@ int sink_rendered(uint64_t *frames, unsigned *rate) {
         }
         line = end ? end + 1 : NULL;
     }
-    if (!found) return clock_fail(other_owner ? "ownership mismatch" : "unavailable hardware", pointer_seen);
+    /* An established substream that vanished is an unplugged output, not a slow start. */
+    if (!found)
+        return clock_fail(other_owner ? "ownership mismatch" : pointer_seen ? "lost hardware" : "unavailable hardware",
+                          pointer_seen);
     if (found != 1) return clock_fail("ambiguous hardware owners", 1);
     if (hz < 8000 || hz > 384000) return clock_fail("invalid hardware rate", pointer_seen);
     if (pointer_seen && (hz != last_rate || strcmp(selected, hardware) || cursor < last_pointer)) {

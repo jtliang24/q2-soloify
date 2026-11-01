@@ -195,11 +195,37 @@ void q2pod_paused(void) {
     say("pause bookmark id=%u valid=%d position=%llu", pause_id, n != 0,
         (unsigned long long)pos);
 }
+/* The output device Q2 Pod selects for aplay.sh (Q2 Pod removes the file for the headphone
+ * DAC, and rewrites it on a volume change, so only its first word names the device). */
+int q2pod_route(char *out, int cap) {
+    char file[128], buf[128];
+    int fd, n = 0;
+    *out = 0;
+    if (!enabled) return 0;
+    path(file, ".out");
+    if ((fd = open(file, 0)) >= 0) {
+        n = read(fd, buf, sizeof buf - 1);
+        close(fd);
+    }
+    int k = 0;
+    while (k < n && k < cap - 1 && buf[k] != ' ' && buf[k] != '\t' && buf[k] != '\n') ++k;
+    memcpy(out, buf, k);
+    out[k] = 0;
+    return 1;
+}
+/* The output went away under the sink: stop the source as a local Pause does, rather than
+ * play on unheard. */
+int q2pod_output_lost(void) {
+    if (!enabled) return 0;
+    if (!held) q2pod_paused();
+    return 1;
+}
 void q2pod_capture(void) {
     if (q2pod_ready()) fresh_wait = 0;
 }
 void q2pod_started(void) {
-    if (enabled && !held && !resetting) lead_in = pause_active, pause_active = 0;
+    /* A player restarted within the restore still presents its lead-in. */
+    if (enabled && !held && !resetting) lead_in |= pause_active, pause_active = 0;
     if (enabled && *prime && !held && !resetting) {
         publish(prime, "playing", number(prime, "position"));
         *prime = 0;

@@ -54,6 +54,17 @@ which is still ahead in the ring, keeps the restored bookmark. Without a reliabl
 anchor the bookmark is invalid; output still stops immediately, and the next Play
 resumes from the source's paused position without rewind rather than at a guessed one.
 
+A lost output pauses as a local Pause does, as the M1's own players do on unplug,
+rather than letting the source play on unheard. When the established substream leaves
+`/proc/asound` (an unplugged USB DAC) or its player exits, the bookmark is the last
+hardware read, if within 500 ms. When a player exits before output starts and no
+later player starts output within 3 s, it is the first sample fed to them, so a
+restore keeps its bookmark. A change, since Play, of the device Q2 Pod names in
+`/tmp/q2-librespot.out` (its first word, not the volume) is a lost output too, checked
+before each player starts: Q2 Pod moves a removed USB DAC's output to the headphone
+DAC (no file), where a retrying player would otherwise go on. A device named only
+later is adopted.
+
 Hardware discovery uses `/proc/asound/pcm`, the sink process-group owner, substream
 `status` (`hw_ptr`) and actual `hw_params` rate. Card/device numbers are not assumed.
 Pointer resets, XRUN, changed ownership/rate and unavailable/ambiguous clocks fail

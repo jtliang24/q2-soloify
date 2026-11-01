@@ -68,6 +68,8 @@ void q2pod_link(int up);
 void q2pod_frame(int type, const unsigned char *p, int n);
 void q2pod_started(void); /* the first buffered packet is about to reach the decoder */
 void q2pod_paused(void); /* stop/reap before publishing the frozen bookmark */
+int q2pod_output_lost(void); /* 1 when Q2 Pod paused for a lost output */
+int q2pod_route(char *out, int cap); /* the selected output device; 0 without Q2 Pod */
 void q2pod_capture(void); /* a fresh encoder begins after ordered control boundaries */
 int q2pod_wants(void);
 int q2pod_audio(void);
@@ -85,6 +87,8 @@ int audio_bookmark(uint64_t *sample); /* hardware presentation sample clock, in 
 const char *audio_clock_reason(void);
 const char *sink_clock_reason(void);
 int sink_unstarted(void); /* owned hardware seen, but not yet RUNNING */
+int sink_established(void); /* this sink's hardware clock has run */
+int sink_lost(void); /* that established substream has since disappeared */
 void audio_capture(unsigned generation, unsigned skip, const unsigned char *primer, int n);
 void audio_end(unsigned seq, unsigned samples);
 void audio_clear(void); /* a seek/skip: stop and discard everything */
