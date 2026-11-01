@@ -19,6 +19,8 @@ static char hardware[256];
 static const char *clock_reason = "unavailable hardware";
 
 const char *sink_clock_reason(void) { return clock_reason; }
+/* Our own OPEN/SETUP/PREPARED substream before its first RUNNING pointer has presented nothing. */
+int sink_unstarted(void) { return !pointer_seen && !pointer_bad && !strcmp(clock_reason, "startup state"); }
 static int clock_fail(const char *reason, int fatal) {
     if (strcmp(clock_reason, reason))
         say("hardware clock reason=%s group=%d hardware=%s pointer=%llu rate=%u established=%d",

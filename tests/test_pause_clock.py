@@ -47,6 +47,22 @@ async def test_open_setup_prepared_running_startup_recovers(contract, card, owne
     assert not children(relay.proc.pid)
 
 
+@pytest.mark.parametrize("word", ["OPEN", "SETUP", "PREPARED"])
+async def test_pause_while_hardware_fills_bookmarks_the_first_fed_sample(contract, word):
+    relay, peer, base = contract
+    # The sink started and aplay owns the PCM, but ALSA has not started playing it yet.
+    await peer.send(wire.TIMELINE, state(position=12000, token=71))
+    await peer.packets(60)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    status = hardware(relay)
+    status(word)
+    await asyncio.sleep(0.08)
+    controls(base, b"s")
+    await until(lambda: peer.bookmarks())
+    assert peer.bookmarks()[-1][4:] == b"token=71\nposition=12000\ntrack=a\n"
+    assert not children(relay.proc.pid)
+
+
 async def test_hardware_epoch_spans_trimmed_capture_and_track_change(contract):
     relay, peer, base = contract
     # 393.5 ms of old-track presentation, then a new decoder with a hidden warmup

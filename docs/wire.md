@@ -47,9 +47,10 @@ buffering/restore. Pause snapshots the hardware cursor, kills/reaps the sink gro
 discards audio and pending metadata, publishes a frozen paused state and sends `R`.
 It never drains a partial buffer or waits for a source fade. If output has not
 started, the bookmark is the first pending sample, or a known source starting
-anchor before the first packet. Without a reliable anchor the bookmark is invalid;
-output still stops immediately, and the next Play resumes from the source's paused
-position without rewind rather than at a guessed one.
+anchor before the first packet. Owned hardware still in `OPEN`/`SETUP`/`PREPARED`
+before its first `RUNNING` pointer has not started output either. Without a reliable
+anchor the bookmark is invalid; output still stops immediately, and the next Play
+resumes from the source's paused position without rewind rather than at a guessed one.
 
 Hardware discovery uses `/proc/asound/pcm`, the sink process-group owner, substream
 `status` (`hw_ptr`) and actual `hw_params` rate. Card/device numbers are not assumed.

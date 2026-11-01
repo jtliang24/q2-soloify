@@ -249,7 +249,15 @@ int audio_bookmark(uint64_t *sample) {
     uint64_t frames;
     unsigned hz;
     if (rendered_invalid) { bookmark_reason = "discarded presentation samples"; return 0; }
-    if (!sink_rendered(&frames, &hz)) { bookmark_reason = sink_clock_reason(); return 0; }
+    if (!sink_rendered(&frames, &hz)) {
+        /* Still filling the hardware buffer: the first fed sample is the one not yet heard. */
+        if (sink_unstarted()) {
+            *sample = sample_ms(rendered_base);
+            return 1;
+        }
+        bookmark_reason = sink_clock_reason();
+        return 0;
+    }
     /* Avoid a compiler runtime for 64-bit division on the stock MIPS link. */
     uint64_t ms = 0, rem = 0;
     for (int bit = 63; bit >= 0; --bit) {
