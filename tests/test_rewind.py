@@ -142,6 +142,13 @@ async def test_repeat_track_without_queue_movement_cannot_select_an_older_duplic
     assert not any(name == "skip_prev" for name, _ in source.calls)
 
 
+def test_occurrence_tokens_do_not_repeat_across_bridge_processes():
+    earlier, _, _ = setup_source(("a", "b", "c"))
+    issued = {item.token for item in earlier.timeline.occurrences}
+    later, _, _ = setup_source(("d",))
+    assert later.timeline.current.token not in issued
+
+
 @pytest.mark.parametrize("action", [b"S50000", b"n", b"browse"])
 async def test_new_navigation_supersedes_delayed_restoration(action):
     rig = Rig(limit=1000)
@@ -429,7 +436,8 @@ def test_sample_anchors_use_capture_clock_across_boundary_and_repeat():
     second = player.timeline.anchor(1_010_020)
     third = player.timeline.anchor(1_020_000)
     assert b"track=a\n" in first and b"position=12050\n" in first
-    assert b"token=1\n" in first and b"token=2\n" in second
+    tokens = [item.token for item in player.timeline.occurrences]
+    assert f"token={tokens[0]}\n".encode() in first and f"token={tokens[1]}\n".encode() in second
     assert b"track=b\n" in third and b"position=0\n" in third
     assert player.timeline.anchor(999_999) is None
 

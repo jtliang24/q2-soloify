@@ -5,6 +5,7 @@ sample timestamp, never TCP arrival time; occurrence tokens distinguish repeated
 """
 
 import asyncio
+import time
 from collections import deque
 from copy import copy
 from dataclasses import dataclass
@@ -31,7 +32,9 @@ class Occurrence:
 
 class Timeline:
     def __init__(self):
-        self.serial = 0
+        # The relay retains a bookmark across bridge restarts: a new process must not reissue
+        # an earlier process's token for a different track.
+        self.serial = time.time_ns() // 1000
         self.current = None
         self.occurrences = deque(maxlen=128)
         self.history = deque(maxlen=4096)
