@@ -11,6 +11,7 @@ static char base[96], current[TEXT] = "state=none\n", upstream[TEXT] = "state=no
 static char prime[TEXT]; /* position of the first audio after connect or a reset */
 static uint64_t stamped;
 static int held, commands, resetting, fresh_wait, restore_ok = 1, pause_active;
+static int lead_in; /* the sink is presenting a restore that has no anchored sample yet */
 static unsigned pause_id;
 static char bookmark[TEXT];
 #define ANCHORS 2048 /* More than the largest ring, plus the hardware/decoder lead. */
@@ -112,9 +113,24 @@ static uint64_t position(void) {
     if (is(current, "playing")) p += now_ms() - stamped;
     return duration && p > duration ? duration : p;
 }
+/* Whether the first source-anchored sample is still ahead of the presentation clock. */
+static int unheard_anchor(uint64_t sample) {
+    for (unsigned i = 0; i < anchor_count; ++i) {
+        unsigned at = (anchor_first + i) % ANCHORS;
+        if (number(anchors[at].text, "token")) return anchors[at].sample > sample;
+    }
+    return 0;
+}
 /* Snapshot before killing the sink: audio_clear deliberately forgets its clocks. */
 void q2pod_paused(void) {
     if (!enabled) return;
+    uint64_t sample = 0;
+    int valid = pause_active || audio_bookmark(&sample);
+    /* Until the restore presents its first anchored sample (the hardware still filling, or
+     * the silence captured before the source resumed), nothing has been heard since its
+     * bookmark. */
+    if (lead_in && valid && unheard_anchor(sample)) pause_active = 1;
+    lead_in = 0;
     if (pause_active) { /* Repeated or rapid Pause retains the original bookmark. */
         if (held) return;
         held = 1;
@@ -131,8 +147,7 @@ void q2pod_paused(void) {
         return;
     }
     pause_active = 1;
-    uint64_t sample = 0, pos = position();
-    int valid = audio_bookmark(&sample);
+    uint64_t pos = position();
     *bookmark = 0;
     for (unsigned i = 0; valid && i < anchor_count; ++i) {
         unsigned at = (anchor_first + i) % ANCHORS;
@@ -184,7 +199,7 @@ void q2pod_capture(void) {
     if (q2pod_ready()) fresh_wait = 0;
 }
 void q2pod_started(void) {
-    if (enabled && !held && !resetting) pause_active = 0;
+    if (enabled && !held && !resetting) lead_in = pause_active, pause_active = 0;
     if (enabled && *prime && !held && !resetting) {
         publish(prime, "playing", number(prime, "position"));
         *prime = 0;
@@ -270,7 +285,7 @@ static void command(char *buf, int n) {
     } else if (reset) {
         restore_ok = 1;
         clear_pause_error();
-        pause_id = pause_active = 0;
+        pause_id = pause_active = lead_in = 0;
         *bookmark = 0;
         held = 0;
         count = first = anchor_count = anchor_first = 0;
@@ -332,7 +347,7 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
         held = fresh_wait = 0;
         restore_ok = 1;
         clear_pause_error();
-        pause_id = pause_active = 0;
+        pause_id = pause_active = lead_in = 0;
         *bookmark = 0;
         anchor_count = anchor_first = 0;
         count = first = 0;
@@ -375,7 +390,7 @@ void q2pod_frame(int type, const unsigned char *p, int n) {
                 held = 0;
                 fresh_wait = 1;
                 restore_ok = 1;
-                pause_id = pause_active = 0;
+                pause_id = pause_active = lead_in = 0;
                 *bookmark = 0;
                 anchor_count = anchor_first = 0;
                 relay_send('A', "0 pause", 7);

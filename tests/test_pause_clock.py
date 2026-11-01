@@ -129,6 +129,46 @@ async def test_repeated_resume_starts_new_hardware_epoch(contract):
         assert not children(relay.proc.pid)
 
 
+@pytest.mark.parametrize(
+    "word,frames,expected",
+    [
+        ("PREPARED", 0, b"token=71\nposition=12200\ntrack=a\n"),
+        ("RUNNING", 4410, b"token=71\nposition=12200\ntrack=a\n"),
+        ("RUNNING", 13230, b"token=72\nposition=12300\ntrack=a\n"),
+    ],
+)
+async def test_pause_in_restore_lead_in_keeps_the_restored_bookmark(
+    contract, word, frames, expected
+):
+    relay, peer, base = contract
+    await peer.send(wire.TIMELINE, state(position=12000, token=71))
+    await peer.packets(50)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    hardware(relay)("RUNNING", 8820)
+    await asyncio.sleep(0.08)
+    controls(base, b"s")
+    await until(lambda: len(peer.bookmarks()) == 1)
+    before = len(peer.controls())
+    controls(base, b"P")
+    await until(lambda: len(peer.controls()) > before)
+    await peer.restored()
+    await peer.send(wire.BOUNDARY, b"P")
+    await peer.send(wire.STATE, state(position=12200))
+    await peer.send(wire.CAPTURE, struct.pack(">IH", 2, 0))
+    # 200 ms captured before the source resumed, then its first anchored sample.
+    await peer.send(wire.TIMELINE, b"token=0\nposition=0\n")
+    await peer.packets(10)
+    await peer.send(wire.TIMELINE, state(position=12200, token=72))
+    await peer.packets(50)
+    await until(lambda: len(children(relay.proc.pid)) == 2)
+    hardware(relay)(word, frames)
+    await asyncio.sleep(0.08)
+    controls(base, b"s")
+    await until(lambda: len(peer.bookmarks()) == 2)
+    assert peer.bookmarks()[-1][4:] == expected
+    assert not children(relay.proc.pid)
+
+
 @pytest.mark.parametrize("rate,card,device", [(44100, 0, 0), (48000, 2, 1), (96000, 3, 0)])
 async def test_hardware_cursor_not_queued_or_wall_clock(contract, rate, card, device):
     relay, peer, base = contract

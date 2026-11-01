@@ -48,7 +48,9 @@ discards audio and pending metadata, publishes a frozen paused state and sends `
 It never drains a partial buffer or waits for a source fade. If output has not
 started, the bookmark is the first pending sample, or a known source starting
 anchor before the first packet. Owned hardware still in `OPEN`/`SETUP`/`PREPARED`
-before its first `RUNNING` pointer has not started output either. Without a reliable
+before its first `RUNNING` pointer has not started output either. A restore that
+has presented only the lead-in captured before its first source-anchored sample,
+which is still ahead in the ring, keeps the restored bookmark. Without a reliable
 anchor the bookmark is invalid; output still stops immediately, and the next Play
 resumes from the source's paused position without rewind rather than at a guessed one.
 
