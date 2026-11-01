@@ -5,6 +5,7 @@ sample timestamp, never TCP arrival time; occurrence tokens distinguish repeated
 """
 
 import asyncio
+import logging
 import time
 from collections import deque
 from copy import copy
@@ -13,6 +14,8 @@ from dataclasses import dataclass
 import aiohttp
 
 from .state import State
+
+log = logging.getLogger("soloify")
 
 
 class RestoreError(Exception):
@@ -266,7 +269,13 @@ class Rewind:
             observed = await self.snapshot(lambda state: state.word == "paused")
             adopted = bookmark.occurrence is None and self.adopts(bookmark, observed)
             if bookmark.occurrence is None and not adopted:
-                raise RestoreError("No reliable audible bookmark; select a track or seek")
+                # No reliable heard position: Play resumes where the source paused, never at
+                # a guessed one. Replaying or skipping a buffer beats a Play that never works.
+                log.info("pause bookmark unreliable; resuming without rewind")
+                p.timeline.current = None
+                p.timeline.history.clear()
+                bookmark.failed = ""
+                return
             # An adopted bookmark seeks the loaded item in place, without navigation.
             target = bookmark.occurrence or Occurrence(0, copy(observed))
             if adopted:

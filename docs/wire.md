@@ -48,7 +48,8 @@ discards audio and pending metadata, publishes a frozen paused state and sends `
 It never drains a partial buffer or waits for a source fade. If output has not
 started, the bookmark is the first pending sample, or a known source starting
 anchor before the first packet. Without a reliable anchor the bookmark is invalid;
-output still stops immediately.
+output still stops immediately, and the next Play resumes from the source's paused
+position without rewind rather than at a guessed one.
 
 Hardware discovery uses `/proc/asound/pcm`, the sink process-group owner, substream
 `status` (`hw_ptr`) and actual `hw_params` rate. Card/device numbers are not assumed.
@@ -79,8 +80,8 @@ same control lock. Reconnect retains the bookmark and verified navigation progre
 Occurrence tokens start from a per-process epoch, so a restarted bridge never reissues
 one. A token it never issued is adopted only when the paused source still holds the
 bookmark's `track=` id, repeat-track is off and its position is within 5 s; it then
-seeks that loaded item in place. The id is compared, never played. Otherwise it
-fails paused until a seek or track selection.
+seeks that loaded item in place. The id is compared, never played. Otherwise Play
+resumes without rewind, as for an invalid bookmark.
 
 Play sends `c P`. Any failed/pending restore is completed first, capture is primed
 before source Play, actual playing state is confirmed, and only fresh capture is

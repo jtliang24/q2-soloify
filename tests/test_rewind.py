@@ -172,14 +172,21 @@ async def test_restarted_bridge_adopts_the_paused_heard_track_and_issues_a_fresh
         (b"token=7\nposition=12500\ntrack=a\n", {"repeat": "track"}),
         (b"token=7\nposition=12500\ntrack=a\n", {"position": 30000}),
         (b"token=7\nposition=12500\n", {}),  # an older relay's bookmark names no track
+        (b"", {}),  # the relay's clock was unreliable (XRUN, reset, no anchor)
     ],
 )
-async def test_restarted_bridge_refuses_an_unverifiable_bookmark(payload, change):
+async def test_unverifiable_bookmark_resumes_without_rewind(payload, change):
     player, source, rewind = restarted_bridge(**change)
+    position = source.position
     rewind.remember(b"\0\0\0\1" + payload)
-    with pytest.raises(RestoreError, match="No reliable audible bookmark"):
-        await rewind.restore()
-    assert not any(name == "seek" for name, _ in source.calls)
+    await rewind.restore()  # never a guessed position: the source stays where it paused
+    assert source.word == "paused" and source.position == position
+    assert not any(name == "seek" or name.startswith("skip") for name, _ in source.calls)
+    assert not rewind.bookmark.failed
+    source.word = "playing"
+    source.serial += 1000
+    source.emit()
+    assert player.timeline.current.token not in (0, 7)
 
 
 def test_occurrence_tokens_do_not_repeat_across_bridge_processes():
