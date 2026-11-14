@@ -109,7 +109,7 @@ Building, testing and running from a checkout (the Nix shell, the relay build, `
 
 ## Manual container development (Docker or Podman)
 
-For macOS and Windows, whose Soloist plays only to the system's default output, and for Linux hosts that prefer it. The image runs Spotify's Linux build (fetched into the data volume at start) into a private PulseAudio null sink, `q2_soloify`; nothing reaches the host's audio. The key goes in as the compose secret `soloist_api_key`, read from `./soloist_api.key`.
+For macOS and Windows, whose Soloist plays only to the system's default output (the [manual setup guide](docs/manual-setup.md#macos-and-windows-docker-desktop) has step-by-step instructions), and for Linux hosts that prefer it. The image runs Spotify's Linux build (fetched into the data volume at start) into a private PulseAudio null sink, `q2_soloify`; nothing reaches the host's audio. The key goes in as the compose secret `soloist_api_key`, read from `./soloist_api.key`.
 
 ```sh
 docker compose up -d                                      # the bridge (soloify serve), port 7443
@@ -120,7 +120,7 @@ docker compose -f compose.yaml -f compose.dev.yaml exec -u soloify soloify sh
 
 `podman compose` takes the same files. The dev override installs the repo's `soloist_release_<arch>.tar.gz` instead of downloading, and runs `sleep infinity` instead of the bridge, so Soloist or `soloify serve` can be run by hand through `exec`. Shells go in as `-u soloify`: the entrypoint starts as root only to hand the secret and the volume to that user. `hadolint container/Containerfile` lints the image.
 
-Pairing needs the phone's Spotify app on Soloist's LAN, but only once: a paired container plays on the default network, controlled through Spotify's cloud. Under Docker Desktop on macOS and Windows the first pairing may need a fallback; [docs/step0-runbook.md](docs/step0-runbook.md) tries them, and [docs/spikes.md](docs/spikes.md) has the results.
+Pairing needs the phone's Spotify app on Soloist's LAN, but only once: a paired container plays on the default network, controlled through Spotify's cloud. Under Docker Desktop on macOS and Windows, pair a native Soloist and copy its state into the container as described in the [manual setup guide](docs/manual-setup.md#macos-and-windows-docker-desktop). The first pairing may need a fallback; [docs/step0-runbook.md](docs/step0-runbook.md) tries them, and [docs/spikes.md](docs/spikes.md) has the results.
 
 Release preparation is documented in [docs/releasing.md](docs/releasing.md).
 
@@ -136,4 +136,4 @@ Release preparation is documented in [docs/releasing.md](docs/releasing.md).
 | `tools/soloify-stall` | step 1's forced stall: blocks the bridge's port for a while (root) |
 | `container/` | `Containerfile`, `entrypoint`, `pulse.pa` |
 | `compose*.yaml` | the service; Linux host networking; development |
-| `flake.nix` | the dev shell and the `soloist` launcher, on q2-pod's nixpkgs revision |
+| `flake.nix` | the optional Nix dev shell and the `soloist` launcher, on q2-pod's nixpkgs revision |
