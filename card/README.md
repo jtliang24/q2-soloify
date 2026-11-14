@@ -1,17 +1,23 @@
 # The card's files
 
-What goes in `.soloify/` on the device's card (PLAN.md section 1). Step 3 adds `run`, the restart loop with Q2 Pod's pid file, and the relay's `-q` device contract. Step 4 adds browsing over TLS; its [M1 runbook](../docs/step4-runbook.md) is pending execution. The Soloify firmware and Apps rows arrive in step 5; the existing Spotify page was used for the temporary compatibility check ([results](../docs/step3.md)).
+The [guided setup](../README.md#guided-setup) exports this folder for the device's card.
+The matching maintainer card ZIP includes the MIPS relay, `run`, `aplay.sh`, and release
+version metadata. Setup adds a private `remote`; releases contain no credentials or
+user settings. Firmware must include Q2-Pod's **Streaming → Soloify** row from the
+`step5-soloify` integration, with protocol v2. Firmware installation is separate.
+Existing installations, including future Apps installations, can export only `remote`.
+The manual [M1 runbook](../docs/step4-runbook.md) remains available for development.
 
 | File | What |
 | --- | --- |
 | `q2-soloify` | the relay, from `relay/build.py --rootfs …` (one binary for the Q2 and the M1 Plus) |
 | `run` | backgrounds itself, owns `/tmp/q2-librespot`, starts the relay with `-q`, and restarts it with 5–60 s backoff; logs to `spot.log` |
 | `aplay.sh` | the sink, unchanged from q2-librespot's `.spotify/aplay.sh`, so `SPOT_OUT` and Q2 Pod's Bluetooth and USB output work alike |
-| `remote` | made by `soloify remote` on the bridge's machine; `remote.sample` explains it. Never in the ZIP, so updates and Remove keep it |
+| `remote` | made by guided setup or `soloify remote` on the bridge's machine; `remote.sample` explains it. Never in the ZIP, so updates and Remove keep it |
 | `.delay`, `.quality` | the firmware's Soloify Delay (milliseconds) and Quality (96, 128 or 160 kbit/s) settings, one integer each. The relay reads them at each connection: `-b` beats `.delay`, which beats the endpoint's `buffer=`; with neither, 1 s on the LAN and 4 s beyond it. `.quality` goes to the bridge in the `A 1` request, and without it the bridge's `--bitrate` applies. Never in the ZIP, so updates and Remove keep them |
 | `log.sh` | step 1's measurements: battery, Wi-Fi bytes, load, the relay's CPU and memory, into `load.log` |
 
-Once firmware supports the Soloify backend, its row calls `run`. To run the launcher by hand on a development device:
+Compatible firmware calls `run` from the Soloify row. To run the launcher by hand on a development device:
 
 ```sh
 cd /mnt/mmc/.soloify

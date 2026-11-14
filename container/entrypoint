@@ -31,9 +31,23 @@ pactl info >/dev/null 2>&1 || {
     exit 1
 }
 
-if [ ! -x "$SOLOIFY_DATA/soloist/soloist" ]; then
-    echo "soloify-entrypoint: fetching Soloist" >&2
-    soloist-fetch --cache /import "$SOLOIFY_DATA/soloist" >&2
+# The bridge supervisor stages, validates and renews Soloist itself. Setup maintenance commands
+# may run before a build is imported; do not download unvalidated files here.
+if [ "${SOLOIFY_SETUP_MAINTENANCE:-}" != 1 ] && [ ! -x "$SOLOIFY_DATA/soloist/soloist" ]; then
+    python3 - <<'PY'
+import asyncio
+import os
+from pathlib import Path
+from soloify.soloist import Soloist, target
+
+build = Soloist(Path(os.environ["SOLOIFY_DATA"]), Path(os.environ["SOLOIST_API_KEY_FILE"]))
+archive = Path("/import") / f"soloist_release_{target()}.tar.gz"
+if archive.exists():
+    asyncio.run(build.fetch(archive.read_bytes()))
+    build.activate()
+else:
+    asyncio.run(build.ensure())
+PY
 fi
 
 exec "$@"

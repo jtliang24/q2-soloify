@@ -22,3 +22,11 @@ def test_remote_lists_lan_then_wan(tmp_path, capsys):
     identity = server.Identity.load(tmp_path)
     tail = f"7443 {identity.token} sha256={identity.pin}"
     assert capsys.readouterr().out.splitlines() == [f"192.168.1.5 {tail}", f"home.example {tail}"]
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "-1"])
+def test_invalid_wan_port_does_not_create_identity(tmp_path, port):
+    with pytest.raises(SystemExit) as done:
+        cli.main(["--data", str(tmp_path), "remote", "--wan-port", port])
+    assert done.value.code == 2
+    assert not (tmp_path / "bridge").exists()

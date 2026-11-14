@@ -14,6 +14,16 @@ from .player import Covers, Player
 PORT = 7443
 
 
+def tcp_port(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be an integer from 1 to 65535") from exc
+    if not 1 <= number <= 65535:
+        raise argparse.ArgumentTypeError("port must be an integer from 1 to 65535")
+    return number
+
+
 async def serve(args: argparse.Namespace) -> int:
     identity = server.Identity.load(args.data)
     tasks = []
@@ -76,8 +86,9 @@ async def serve(args: argparse.Namespace) -> int:
 
 def remote(args: argparse.Namespace) -> int:
     identity = server.Identity.load(args.data)
-    hosts = (args.lan or [server.lan_address()]) + (args.wan or [])
-    print("\n".join(server.remote_lines(identity, hosts, args.port)))
+    lines = server.remote_lines(identity, args.lan or [server.lan_address()], args.port)
+    lines += server.remote_lines(identity, args.wan or [], args.wan_port or args.port)
+    print("\n".join(lines))
     return 0
 
 
@@ -93,9 +104,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
     p = sub.add_parser("serve", help="run Soloist and the bridge")
     p.add_argument("--listen", default=None, help="address to listen on (default all)")
-    p.add_argument("--port", type=int, default=PORT)
+    p.add_argument("--port", type=tcp_port, default=PORT)
     p.add_argument("--name", default="Q2", help="Soloist's Spotify Connect name (default Q2)")
-    p.add_argument("--bitrate", type=int, choices=(96, 128, 160), default=160, help="kbit/s, unless the relay asks for another")
+    p.add_argument(
+        "--bitrate",
+        type=int,
+        choices=(96, 128, 160),
+        default=160,
+        help="kbit/s, unless the relay asks for another",
+    )
     p.add_argument(
         "--inflight", type=int, default=2000, help="ms of unacked audio that make a stall"
     )
@@ -111,13 +128,35 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("remote", help="print the card's .soloify/remote")
     p.add_argument("--lan", action="append", help="LAN address, tried first (default: this one's)")
     p.add_argument("--wan", action="append", help="name or address from outside, tried next")
-    p.add_argument("--port", type=int, default=PORT)
+    p.add_argument("--port", type=tcp_port, default=PORT)
+    p.add_argument("--wan-port", type=tcp_port, help="external TCP port (default: --port)")
+    p = sub.add_parser("setup", help="guided bridge setup and card export")
+    p.add_argument("--check", action="store_true", help="read-only prerequisite report")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--root", type=Path, default=Path.home() / ".soloify-bridge")
+    p = sub.add_parser("diagnostics", help="Soloist version and automatic renewal status")
     p = sub.add_parser("login", help="authorize the Spotify Web API")
     p.add_argument("--client-id", default=os.environ.get("SPOTIFY_CLIENT_ID"))
     p.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
+        return 0
+    if args.command == "setup":
+        from . import setup_bootstrap
+
+        options = ["--root", str(args.root)]
+        if args.check:
+            options.append("--check")
+        if args.json:
+            options.append("--json")
+        return setup_bootstrap.main(options, installed=True)
+    if args.command == "diagnostics":
+        import json
+
+        print(
+            json.dumps(asyncio.run(soloist.Soloist(args.data, Path("unused")).status()), indent=2)
+        )
         return 0
     if args.command == "serve":
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
