@@ -62,6 +62,9 @@
           python = pkgs.python3.withPackages (
             ps: with ps; [
               aiohttp
+              build
+              setuptools
+              wheel
               cryptography
               pytest
               pytest-asyncio

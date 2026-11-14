@@ -8,3 +8,10 @@ soloist_release_*
 .pytest_cache
 .ruff_cache
 result*
+build
+.direnv
+.venv
+.agents
+.aws
+.codex
+**/*.log
