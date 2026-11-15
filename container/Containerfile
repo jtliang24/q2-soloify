@@ -5,6 +5,7 @@
 # terms forbid redistribution), and plays into a private PulseAudio null sink, not the host's audio.
 # Multi-arch: linux/amd64, linux/arm64, linux/arm/v7.
 FROM debian:trixie-slim
+LABEL org.opencontainers.image.source="https://github.com/jtliang24/q2-soloify"
 
 # libatomic1: linked by Soloist; libpulse0 and ffmpeg's libraries: dlopened by it.
 RUN apt-get update \

@@ -5,8 +5,16 @@ on:
       tag:
         description: Existing draft release tag containing the maintainer-built card ZIP
         required: true
+      purpose:
+        description: Walkthrough prerelease or validated release
+        type: choice
+        options:
+          - walkthrough
+          - validated
+        default: walkthrough
+        required: true
       walkthroughs_verified:
-        description: Required physical-host walkthroughs are recorded and passed
+        description: Required physical-host walkthroughs are recorded and passed (validated releases only)
         type: boolean
         default: false
         required: true
@@ -15,7 +23,7 @@ permissions:
   packages: write
 jobs:
   release:
-    if: inputs.walkthroughs_verified
+    if: inputs.purpose == 'walkthrough' || inputs.walkthroughs_verified
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,12 +65,23 @@ jobs:
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: ${{ steps.image.outputs.tag }}
+      - name: Verify anonymous image pull
+        env:
+          RELEASE_IMAGE: ${{ steps.image.outputs.tag }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/soloify-anonymous"
+          docker --config "$RUNNER_TEMP/soloify-anonymous" pull --platform linux/amd64 "$RELEASE_IMAGE"
       - name: Upload and publish artifacts
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_PURPOSE: ${{ inputs.purpose }}
         run: |
           gh release upload "$RELEASE_TAG" build/release/* --clobber
           gh release view "$RELEASE_TAG" --json assets > build/release-assets.json
           python -c 'import json; from pathlib import Path; expected={p.name for p in Path("build/release").iterdir()}; actual={a["name"] for a in json.loads(Path("build/release-assets.json").read_text())["assets"]}; assert actual == expected, "Draft contains unexpected release assets"'
-          gh release edit "$RELEASE_TAG" --draft=false
+          if [ "$RELEASE_PURPOSE" = walkthrough ]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
+          fi
