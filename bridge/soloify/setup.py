@@ -574,6 +574,9 @@ class Wizard:
             [*cmd, "--pair", "-n", "Q2", "-k", self.key.read_text().strip(), "-D", str(state), "-v"]
         ):
             return False
+        if not paired(state):
+            print("Soloist exited without storing a paired session.")
+            return False
         if self.method == "docker":
             self.import_session(state)
         return True
