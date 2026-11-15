@@ -33,6 +33,14 @@ from . import __version__, server, soloist, spotify
 from .setup_bootstrap import IMAGE, ask_yes, detect, release_asset, source_root
 
 PORT = 7443
+# Pairing stores account credentials under settings/Users/<id>-user/. An unpaired state
+# directory still has .device_id, .lock, cache/ and crashpad/, so those prove nothing.
+# PAIRED is the same check as inline source for the release image, which may predate this module.
+PAIRED = "any(f.is_file() for f in (STATE/'settings'/'Users').glob('*/*'))"
+
+
+def paired(state: Path) -> bool:
+    return any(f.is_file() for f in (state / "settings/Users").glob("*/*"))
 
 
 def path_input(value: str) -> Path:
@@ -410,8 +418,8 @@ class Wizard:
         raise RuntimeError("Container audio service did not become ready")
 
     def import_session(self, source: Path):
-        if not source.is_dir() or not any(p.is_file() for p in source.iterdir()):
-            raise ValueError("Choose the paired soloist-state directory")
+        if not source.is_dir() or not paired(source):
+            raise ValueError("Choose a soloist-state directory that has completed pairing")
         if source.is_symlink() or any(p.is_symlink() for p in source.rglob("*")):
             raise ValueError("Session imports may not contain symbolic links")
         if self.method == "docker":
@@ -428,18 +436,10 @@ class Wizard:
                 path.chmod(0o700 if path.is_dir() else 0o600)
 
     def has_session(self) -> bool:
-        script = (
-            "from pathlib import Path; p=Path('/data/soloist-state'); "
-            "print(any(f.is_file() and f.name not in {'.device_id','.lock','ws.port'} for f "
-            "in p.glob('*')))"
-        )
         if self.method == "docker":
+            script = f"from pathlib import Path; STATE=Path('/data/soloist-state'); print({PAIRED})"
             return self.python(script) == "True"
-        folder = self.data / "soloist-state"
-        return any(
-            p.is_file() and p.name not in {".device_id", ".lock", "ws.port"}
-            for p in folder.glob("*")
-        )
+        return paired(self.data / "soloist-state")
 
     def ensure_build(self):
         if self.method == "docker":
@@ -1037,11 +1037,9 @@ class Wizard:
                     IMAGE,
                     "-c",
                     "from pathlib import Path; "
-                    "p=Path('/data'); "
+                    "p=Path('/data'); STATE=p/'soloist-state'; "
                     "print(all((p/n).is_file() for n in "
-                    "['bridge/cert.pem','bridge/key.pem','bridge/token']) "
-                    "and any(f.is_file() and f.name not in {'.device_id','.lock','ws.port'} "
-                    "for f in (p/'soloist-state').glob('*')))",
+                    f"['bridge/cert.pem','bridge/key.pem','bridge/token']) and {PAIRED})",
                 ]
             )
             return probe == "True"

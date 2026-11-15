@@ -60,7 +60,8 @@ def test_pairing_storage_oauth_transfer_and_normal_network(tmp_path, monkeypatch
         assert wizard.pairing_probe()
         session = tmp_path / "session"
         session.mkdir()
-        (session / ".credentials").write_text("FAKE-SESSION")
+        (session / "settings/Users/1-user").mkdir(parents=True)
+        (session / "settings/Users/1-user/cached").write_text("FAKE-SESSION")
         wizard.import_session(session)
         assert wizard.has_session()
         oauth = tmp_path / "oauth.json"

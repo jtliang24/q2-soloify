@@ -318,14 +318,30 @@ def test_oauth_failure_can_skip_without_exposing_error(tmp_path, monkeypatch, ca
 def test_native_session_import_preserves_dotfiles_and_rejects_links(tmp_path):
     src = tmp_path / "source"
     src.mkdir()
-    (src / ".credentials").write_text("PRIVATE")
+    (src / "settings/Users/1-user").mkdir(parents=True)
+    (src / "settings/Users/1-user/cached").write_text("PRIVATE")
     wizard = setup.Wizard(tmp_path / "install", "native")
     wizard.import_session(src)
-    assert (wizard.data / "soloist-state/.credentials").read_text() == "PRIVATE"
-    assert (wizard.data / "soloist-state/.credentials").stat().st_mode & 0o777 == 0o600
-    (src / "link").symlink_to(src / ".credentials")
+    assert wizard.has_session()
+    cached = wizard.data / "soloist-state/settings/Users/1-user/cached"
+    assert cached.read_text() == "PRIVATE"
+    assert cached.stat().st_mode & 0o777 == 0o600
+    (src / "link").symlink_to(src / "settings")
     with pytest.raises(ValueError, match="symbolic"):
         wizard.import_session(src)
+
+
+def test_unpaired_state_is_not_a_session(tmp_path):
+    # Soloist creates these before pairing completes; credentials only appear under settings/.
+    src = tmp_path / "source"
+    (src / "cache").mkdir(parents=True)
+    (src / ".device_id").write_text("DEVICE")
+    (src / "cache/client_token").write_text("TOKEN")
+    wizard = setup.Wizard(tmp_path / "install", "native")
+    assert not setup.paired(src)
+    with pytest.raises(ValueError, match="completed pairing"):
+        wizard.import_session(src)
+    assert not wizard.has_session()
 
 
 def test_pairing_logs_only_firewall_port(tmp_path, capsys):
@@ -387,8 +403,8 @@ def mips_binary():
 def test_native_existing_data_import_preserves_identity_and_oauth(tmp_path, monkeypatch):
     source = tmp_path / "existing"
     identity = server.Identity.load(source)
-    (source / "soloist-state").mkdir()
-    (source / "soloist-state/.credentials").write_text("PAIRED")
+    (source / "soloist-state/settings/Users/1-user").mkdir(parents=True)
+    (source / "soloist-state/settings/Users/1-user/cached").write_text("PAIRED")
     (source / "oauth.json").write_text('{"refresh_token":"PRIVATE"}')
     wizard = setup.Wizard(tmp_path / "installation", "native")
     monkeypatch.setattr(wizard, "optional_path", lambda *a: source)
@@ -397,7 +413,7 @@ def test_native_existing_data_import_preserves_identity_and_oauth(tmp_path, monk
     installed = server.Identity.load(wizard.data)
     assert installed.pin == identity.pin and installed.token == identity.token
     assert (wizard.data / "oauth.json").read_bytes() == (source / "oauth.json").read_bytes()
-    assert (wizard.data / "soloist-state/.credentials").read_text() == "PAIRED"
+    assert (wizard.data / "soloist-state/settings/Users/1-user/cached").read_text() == "PAIRED"
 
 
 def test_reusing_docker_volume_is_external_and_preserves_name(tmp_path):
