@@ -105,7 +105,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("serve", help="run Soloist and the bridge")
     p.add_argument("--listen", default=None, help="address to listen on (default all)")
     p.add_argument("--port", type=tcp_port, default=PORT)
-    p.add_argument("--name", default="Q2", help="Soloist's Spotify Connect name (default Q2)")
+    p.add_argument(
+        "--name", default="soloify", help="Soloist's Spotify Connect name (default soloify)"
+    )
     p.add_argument(
         "--bitrate",
         type=int,

@@ -44,7 +44,7 @@ never includes Soloist or anyone's credentials.
 
 The wizard guides you through:
 
-1. Pairing **Q2** in Spotify's device picker on the same LAN. Linux Docker pairs
+1. Pairing **soloify** in Spotify's device picker on the same LAN. Linux Docker pairs
    temporarily with host networking after a connectivity probe. Native Linux Docker
    Engine needs no Desktop toggle. Where Linux Docker Desktop requires the setting,
    setup guides **Settings → Resources → Network → Enable host networking → Apply

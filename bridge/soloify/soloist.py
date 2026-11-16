@@ -123,7 +123,9 @@ class Soloist:
     its cache in data/cache/; restarted on exit with a backoff, and on a new build once idle() says
     nothing plays. Builds may not be redistributed, so each machine fetches its own."""
 
-    def __init__(self, data: Path, key_file: Path, name: str = "Q2", launcher: str | None = None):
+    def __init__(
+        self, data: Path, key_file: Path, name: str = "soloify", launcher: str | None = None
+    ):
         self.data = data
         # Nix's launcher, or in the container the build itself; "" runs the build directly
         self.launcher = shutil.which("soloist") if launcher is None else launcher

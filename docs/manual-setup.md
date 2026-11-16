@@ -53,7 +53,7 @@ tools/soloist-fetch --cache .      # data/soloist/, from ./soloist_release_<arch
 PATH="$PWD/data/soloist:$PATH" tools/soloist-run --pair -v
 ```
 
-In Spotify on your phone (or the desktop app on this computer), open the device picker and choose **Q2**. The log ends `pairing complete, credentials stored`. A host firewall hides Soloist from the phone, so open the ZeroConf port the log names for the pairing, then close it again:
+In Spotify on your phone (or the desktop app on this computer), open the device picker and choose **soloify**. The log ends `pairing complete, credentials stored`. A host firewall hides Soloist from the phone, so open the ZeroConf port the log names for the pairing, then close it again:
 
 ```sh
 sudo ufw allow PORT/tcp                                                         # ufw; `sudo ufw delete allow PORT/tcp` afterwards
@@ -61,7 +61,7 @@ sudo firewall-cmd --add-port=PORT/tcp                                           
 sudo nft add rule inet filter input tcp dport PORT accept                       # plain nftables; adjust the table
 ```
 
-Soloist also announces itself over mDNS (UDP 5353), so allow that too if the phone can't see **Q2**. Soloist's session lives in `data/soloist-state/`; never run two copies of it at once.
+Soloist also announces itself over mDNS (UDP 5353), so allow that too if the phone can't see **soloify**. Soloist's session lives in `data/soloist-state/`; never run two copies of it at once.
 
 Open the bridge's port to the M1 (TCP 7443 from the M1's subnet), then serve:
 
@@ -70,7 +70,7 @@ sudo ufw allow from 192.168.1.0/24 to any port 7443 proto tcp     # or firewalld
 python -m soloify.cli serve
 ```
 
-The log shows `listening on 7443, pin sha256=…`, and the bridge keeps running Soloist. Use `--name` to change the Connect name (default `Q2`), `--bitrate 96|128|160` for the default quality, and `--source test` to serve a beep instead of Soloist when you only want to check the connection.
+The log shows `listening on 7443, pin sha256=…`, and the bridge keeps running Soloist. Use `--name` to change the Connect name (default `soloify`), `--bitrate 96|128|160` for the default quality, and `--source test` to serve a beep instead of Soloist when you only want to check the connection.
 
 #### Nix
 
@@ -108,7 +108,7 @@ Docker Desktop runs containers in a VM, so the phone can't discover Soloist insi
 ```sh
 # on the host (macOS, or inside WSL 2 on Windows), in the checkout
 tools/soloist-fetch --cache .
-PATH="$PWD/data/soloist:$PATH" tools/soloist-run --pair -v        # choose Q2 in the Spotify app; wait for "pairing complete"
+PATH="$PWD/data/soloist:$PATH" tools/soloist-run --pair -v        # choose soloify in the Spotify app; wait for "pairing complete"
 
 docker compose cp data/soloist-state soloify:/data/soloist-state
 docker compose exec -u root soloify chown -R soloify:soloify /data/soloist-state
@@ -181,7 +181,7 @@ Make `q2-soloify`, `run` and `aplay.sh` executable (`chmod 755`) and `remote` pr
 
 1. Check the bridge is reachable: on the M1, `telnet BRIDGE_LAN_ADDRESS 7443` should connect (it doesn't speak TLS, so it ends at once).
 2. Open **Streaming → Soloify** on the M1, which follows Spotify's row. If the row is missing, `.soloify/q2-soloify` isn't on the card or Soloify is switched off in Streaming Configuration.
-3. The page loads the Spotify menu. If Soloist is logged in but idle, select **Q2** in the Spotify app on your phone, then play from the device's playlists, search or queue.
+3. The page loads the Spotify menu. If Soloist is logged in but idle, select **soloify** in the Spotify app on your phone, then play from the device's playlists, search or queue.
 
 `.soloify/spot.log` records the relay. A working start reads `state and controls ready`, then `connected to ADDRESS:7443, buffer 1000 ms`.
 

@@ -571,7 +571,17 @@ class Wizard:
                 )
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         if not self.pair_process(
-            [*cmd, "--pair", "-n", "Q2", "-k", self.key.read_text().strip(), "-D", str(state), "-v"]
+            [
+                *cmd,
+                "--pair",
+                "-n",
+                "soloify",
+                "-k",
+                self.key.read_text().strip(),
+                "-D",
+                str(state),
+                "-v",
+            ]
         ):
             return False
         if not paired(state):
@@ -586,7 +596,7 @@ class Wizard:
             return
         print("Keep Spotify and this computer on the same LAN, without guest/client isolation.")
         print(
-            "In Spotify's device picker choose Q2. Allow Soloist through the host firewall on "
+            "In Spotify's device picker choose soloify. Allow Soloist through the host firewall on "
             "private networks."
         )
         print(

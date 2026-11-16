@@ -262,7 +262,7 @@ class Browser:
 
     async def local(self, command, **fields):
         if not self.player.ws or not self.player.state.logged_in:
-            raise APIError("login", "Pair Soloist on the server and choose Q2 in Spotify")
+            raise APIError("login", "Pair Soloist on the server and choose soloify in Spotify")
         return await self.player.ws.request(command, **fields)
 
     async def dispatch(self, op, args):
@@ -279,7 +279,7 @@ class Browser:
         if op == "account":
             p = await self.profile()
             if not self.player.state.logged_in:
-                raise APIError("login", "Pair Soloist on the server and choose Q2 in Spotify")
+                raise APIError("login", "Pair Soloist on the server and choose soloify in Spotify")
             return (
                 [
                     (
