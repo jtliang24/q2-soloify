@@ -29,6 +29,10 @@ DOCKER_INSTALL = {
 }
 
 
+class SetupError(RuntimeError):
+    """An actionable setup failure with a message safe to display."""
+
+
 def output(*cmd: str) -> str:
     """Bounded, read-only probes. Never echo raw Docker diagnostics or environment secrets."""
     try:
@@ -110,6 +114,16 @@ def detect(root: Path) -> dict:
         native_missing.append("a working Nix installation")
     if not audio:
         native_missing.append("a running PulseAudio or PipeWire PulseAudio server")
+    methods = {"docker": missing, "native": native_missing}
+    saved_method = None
+    try:
+        state = json.loads((root / "setup-state.json").read_text())
+        if isinstance(state, dict) and state.get("method") in ("docker", "native"):
+            saved_method = state["method"]
+    except (OSError, ValueError):
+        pass
+    candidates = (saved_method,) if saved_method else ("docker", "native")
+    recommended = next((method for method in candidates if not methods[method]), None)
     return {
         "os": system,
         "architecture": machine,
@@ -124,8 +138,9 @@ def detect(root: Path) -> dict:
         "needs_host_network": system == "Linux",
         "nix": nix,
         "native_audio": audio,
-        "methods": {"docker": missing, "native": native_missing},
-        "recommended": "docker" if not missing else "native" if not native_missing else None,
+        "methods": methods,
+        "saved_method": saved_method,
+        "recommended": recommended,
         "lan_addresses": lan_addresses(),
         "existing": [
             str(p)
@@ -146,6 +161,13 @@ def report(facts: dict) -> None:
     print("LAN addresses:", ", ".join(facts["lan_addresses"]) or "none detected")
     if facts["needs_host_network"] and facts["docker_desktop"]:
         print("Linux Desktop pairing host networking:", facts["host_network"])
+    if facts["saved_method"]:
+        print("Existing installation method:", facts["saved_method"])
+        if not facts["recommended"]:
+            print(
+                "Fix the requirements listed for the existing installation method and rerun. "
+                "Use a new --root for a separate installation."
+            )
     print("Recommended:", facts["recommended"] or "no usable method")
     if facts["existing"]:
         print("Existing resources:", ", ".join(facts["existing"]))
@@ -188,17 +210,35 @@ def release_asset(name: str) -> bytes:
     """Verify artifacts against the same release's HTTPS checksum manifest."""
     import hashlib
 
-    with urllib.request.urlopen(f"{RELEASE}/SHA256SUMS", timeout=60) as response:
-        rows = response.read().decode().splitlines()
+    try:
+        with urllib.request.urlopen(f"{RELEASE}/SHA256SUMS", timeout=60) as response:
+            rows = response.read().decode().splitlines()
+    except OSError as exc:
+        raise SetupError(
+            "Could not download release checksums. Check access to GitHub and rerun setup."
+        ) from exc
+    except UnicodeError as exc:
+        raise SetupError(
+            "Could not read release checksums. Download the launcher from the matching release."
+        ) from exc
     sums = dict(
         (line.split()[1].lstrip("*"), line.split()[0]) for line in rows if len(line.split()) == 2
     )
     if name not in sums:
-        raise RuntimeError(f"release checksum missing for {name}")
-    with urllib.request.urlopen(f"{RELEASE}/{name}", timeout=120) as response:
-        data = response.read()
+        raise SetupError(
+            f"Release checksum missing for {name}. Download the launcher from the matching release."
+        )
+    try:
+        with urllib.request.urlopen(f"{RELEASE}/{name}", timeout=120) as response:
+            data = response.read()
+    except OSError as exc:
+        raise SetupError(
+            f"Could not download {name}. Check access to GitHub and rerun setup."
+        ) from exc
     if hashlib.sha256(data).hexdigest() != sums[name]:
-        raise RuntimeError(f"release checksum mismatch for {name}")
+        raise SetupError(
+            f"Release checksum mismatch for {name}. Rerun setup to download a fresh copy."
+        )
     return data
 
 
@@ -282,7 +322,7 @@ def main(argv: list[str] | None = None, *, installed: bool = False) -> int:
         help="read-only readiness report; no containers or downloads",
     )
     parser.add_argument(
-        "--json", action="store_true", help="machine-readable readiness report with --check"
+        "--json", action="store_true", help="read-only JSON readiness report (implies --check)"
     )
     parser.add_argument("--root", type=Path, default=Path.home() / ".soloify-bridge")
     parser.add_argument("--selected", choices=("docker", "native"), help=argparse.SUPPRESS)
@@ -297,22 +337,22 @@ def main(argv: list[str] | None = None, *, installed: bool = False) -> int:
             print(json.dumps(facts, indent=2))
         else:
             report(facts)
-        if args.check:
+        if args.check or args.json:
             return 0 if facts["recommended"] else 2
         if not facts["recommended"]:
             return 2
         method = args.selected
-        try:
-            existing = json.loads((root / "setup-state.json").read_text()).get("method")
-            if existing in facts["methods"] and not facts["methods"][existing]:
-                facts["recommended"] = existing
-        except (OSError, ValueError, AttributeError):
-            pass
         if method is None:
             method = (
                 input(f"Method [docker/native] ({facts['recommended']}): ").strip().lower()
                 or facts["recommended"]
             )
+        if facts["saved_method"] and method != facts["saved_method"]:
+            print(
+                "Rerun with the existing installation method or choose a new --root "
+                "for a separate installation."
+            )
+            return 2
         if method not in facts["methods"] or facts["methods"][method]:
             print("Selected method is unavailable; fix the requirements above and rerun.")
             return 2
@@ -330,6 +370,9 @@ def main(argv: list[str] | None = None, *, installed: bool = False) -> int:
     except (KeyboardInterrupt, EOFError):
         print("\nSetup cancelled; existing credentials and identity are retained.")
         return 130
+    except SetupError as exc:
+        print(exc)
+        return 2
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(
             f"Setup could not continue ({type(exc).__name__}). "

@@ -1,7 +1,10 @@
 # Guided setup operations
 
-Run `python3 soloify-setup.py --check` for a non-mutating report, or
-`soloify setup --check --json` for automation. No temporary containers are created.
+Run `python3 soloify-setup.py --check` for a read-only report, or
+`soloify setup --json` for automation. Both launchers accept `--json` on its own.
+For an existing installation, readiness reflects the method saved under `--root`.
+If its prerequisites are missing, fix them and rerun or choose a new root to
+create a separate installation.
 Detection can report Docker usable while Linux Desktop host-network confirmation is
 still required before pairing. Host networking is checked again after Apply and restart.
 macOS/Windows use native pairing and do not require that setting for normal setup.

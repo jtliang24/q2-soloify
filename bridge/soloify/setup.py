@@ -30,7 +30,7 @@ import zipfile
 from pathlib import Path
 
 from . import __version__, server, soloist, spotify
-from .setup_bootstrap import IMAGE, ask_yes, detect, release_asset, source_root
+from .setup_bootstrap import IMAGE, SetupError, ask_yes, detect, release_asset, source_root
 
 PORT = 7443
 # Pairing stores account credentials under settings/Users/<id>-user/. An unpaired state
@@ -898,10 +898,22 @@ class Wizard:
             source = self.optional_path(
                 "Matching maintainer card ZIP (or Enter to download release)", []
             )
-            data = (
-                source.read_bytes() if source else release_asset(f"soloify-card-{__version__}.zip")
-            )
-            files = card_files(data)
+            if source:
+                try:
+                    data = source.read_bytes()
+                except OSError as exc:
+                    raise SetupError(
+                        "Could not read the card ZIP. Check that the file is readable or "
+                        "rerun setup to download the release ZIP."
+                    ) from exc
+            else:
+                data = release_asset(f"soloify-card-{__version__}.zip")
+            try:
+                files = card_files(data)
+            except (ValueError, zipfile.BadZipFile) as exc:
+                raise SetupError(
+                    "Could not use the card ZIP. Choose the card ZIP from the matching release."
+                ) from exc
         destination = path_input(
             self.prompt(
                 "Export directory containing .soloify",
@@ -916,7 +928,13 @@ class Wizard:
             ):
                 self.results["File export"] = "skipped; previous export retained"
                 return
-        export_card(folder, remote, files)
+        try:
+            export_card(folder, remote, files)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SetupError(
+                "Could not write the card export. Check that the destination is writable "
+                "and has free space, or choose another directory and rerun setup."
+            ) from exc
         self.state["export"] = str(destination)
         self.save()
         self.results["File export"] = str(folder) + (
@@ -1148,6 +1166,9 @@ def main(argv=None) -> int:
     except (KeyboardInterrupt, EOFError):
         print("\nSetup cancelled; progress saved and credentials retained. Rerun to resume.")
         return 130
+    except SetupError as exc:
+        print(exc)
+        return 2
     except (
         OSError,
         ValueError,

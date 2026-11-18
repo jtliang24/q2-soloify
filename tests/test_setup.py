@@ -106,14 +106,70 @@ def test_no_method_exits_without_credentials_downloads_or_writes(tmp_path, monke
     assert not root.exists()
 
 
-def test_check_is_non_mutating_and_does_not_confirm_networking(tmp_path, monkeypatch):
+@pytest.mark.parametrize("flags", [["--check", "--json"], ["--json"]])
+@pytest.mark.parametrize("run", [boot.main, lambda args: cli.main(["setup", *args])])
+def test_check_is_non_mutating_and_does_not_confirm_networking(
+    tmp_path, monkeypatch, capsys, flags, run
+):
     calls = probes(monkeypatch, desktop=True)
     monkeypatch.setattr(boot, "desktop_host_network", lambda: False)
     monkeypatch.setattr("builtins.input", lambda _: pytest.fail("check must not prompt"))
     root = tmp_path / "missing"
-    assert boot.main(["--check", "--json", "--root", str(root)]) == 0
+    assert run([*flags, "--root", str(root)]) == 0
+    assert json.loads(capsys.readouterr().out)["recommended"] == "docker"
     assert not root.exists()
     assert all(c[1] in {"compose", "context", "info", "show-config"} for c in calls)
+
+
+def test_existing_native_method_drives_report_and_default(tmp_path, monkeypatch, capsys):
+    probes(monkeypatch)
+    (tmp_path / "setup-state.json").write_text('{"method": "native"}')
+    args = ["--root", str(tmp_path)]
+    assert boot.main([*args, "--json"]) == 0
+    facts = json.loads(capsys.readouterr().out)
+    assert facts["saved_method"] == facts["recommended"] == "native"
+
+    prompts = []
+    selected = []
+
+    def choose_default(prompt):
+        prompts.append(prompt)
+        return ""
+
+    def provision(root, method):
+        selected.append((root, method))
+        return 0
+
+    monkeypatch.setattr("builtins.input", choose_default)
+    monkeypatch.setattr(boot, "provision", provision)
+    assert boot.main(args) == 0
+    text = capsys.readouterr().out
+    assert "Existing installation method: native" in text
+    assert "Recommended: native" in text
+    assert len(prompts) == 1 and "(native)" in prompts[0]
+    assert selected == [(tmp_path, "native")]
+
+
+@pytest.mark.parametrize("nix", [False, True])
+def test_existing_root_rejects_method_switch_before_provisioning(
+    tmp_path, monkeypatch, capsys, nix
+):
+    probes(monkeypatch, nix=nix)
+    (tmp_path / "setup-state.json").write_text('{"method": "native"}')
+    monkeypatch.setattr(boot, "provision", lambda *a: pytest.fail("must not provision"))
+    if nix:
+        monkeypatch.setattr("builtins.input", lambda _: "docker")
+    else:
+        monkeypatch.setattr("builtins.input", lambda _: pytest.fail("must not prompt"))
+        assert boot.main(["--root", str(tmp_path), "--json"]) == 2
+        facts = json.loads(capsys.readouterr().out)
+        assert facts["saved_method"] == "native"
+        assert facts["recommended"] is None
+    assert boot.main(["--root", str(tmp_path)]) == 2
+    text = capsys.readouterr().out
+    assert "new --root" in text
+    if not nix:
+        assert "Nix with nix-command and flakes enabled" in text
 
 
 @pytest.mark.parametrize(
@@ -458,3 +514,17 @@ def test_installed_setup_redacts_invalid_import_errors(tmp_path, monkeypatch, ca
     monkeypatch.setattr(setup.Wizard, "run", failed)
     assert boot.main(["--root", str(tmp_path), "--selected", "docker"], installed=True) == 2
     assert "SECRET_IMPORT_CONTENT" not in capsys.readouterr().out
+
+
+def test_card_export_failure_explains_how_to_retry(tmp_path, monkeypatch, capsys):
+    destination = tmp_path / "existing-file"
+    destination.touch()
+    monkeypatch.setattr(setup, "ask_yes", lambda *a: False)
+    monkeypatch.setattr("builtins.input", lambda _: str(destination))
+    monkeypatch.setattr(setup.Wizard, "run", lambda self: self.export("private remote"))
+
+    assert setup.main(["--root", str(tmp_path), "--method", "docker"]) == 2
+    text = capsys.readouterr().out
+    assert "Could not write the card export" in text
+    assert "Check that the destination is writable" in text
+    assert "private remote" not in text

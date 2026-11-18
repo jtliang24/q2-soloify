@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from soloify import __version__, setup
-from test_setup import mips_binary
+from test_setup import mips_binary, probes
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("release", ROOT / "tools/release.py")
@@ -78,7 +78,7 @@ def test_card_package_rejects_secret_and_version_mismatch():
             setup.card_files(buf.getvalue())
 
 
-def test_asset_checksums_checked_before_use(monkeypatch):
+def test_asset_checksum_failure_explains_how_to_retry(tmp_path, monkeypatch, capsys):
     from soloify import setup_bootstrap as boot
 
     artifact = b"downloaded artifact"
@@ -92,5 +92,11 @@ def test_asset_checksums_checked_before_use(monkeypatch):
         )
 
     monkeypatch.setattr(boot.urllib.request, "urlopen", download)
-    with pytest.raises(RuntimeError, match="checksum mismatch"):
-        boot.release_asset("test.whl")
+    probes(monkeypatch)
+    monkeypatch.setattr(boot, "provision", lambda *a: boot.release_asset("test.whl"))
+
+    assert boot.main(["--root", str(tmp_path), "--selected", "docker"]) == 2
+    text = capsys.readouterr().out
+    assert "checksum mismatch for test.whl" in text
+    assert "Rerun setup to download a fresh copy" in text
+    assert "downloaded artifact" not in text

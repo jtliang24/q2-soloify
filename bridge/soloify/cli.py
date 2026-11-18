@@ -134,7 +134,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--wan-port", type=tcp_port, help="external TCP port (default: --port)")
     p = sub.add_parser("setup", help="guided bridge setup and card export")
     p.add_argument("--check", action="store_true", help="read-only prerequisite report")
-    p.add_argument("--json", action="store_true")
+    p.add_argument(
+        "--json", action="store_true", help="read-only JSON readiness report (implies --check)"
+    )
     p.add_argument("--root", type=Path, default=Path.home() / ".soloify-bridge")
     p = sub.add_parser("diagnostics", help="Soloist version and automatic renewal status")
     p = sub.add_parser("login", help="authorize the Spotify Web API")
