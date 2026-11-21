@@ -75,7 +75,8 @@ Keep that directory private and backed up: it preserves the bridge identity, pai
 session, OAuth credentials and API key. Progress is stored separately without secrets.
 
 Q2-Pod firmware must include **Streaming → Soloify**, from the `step5-soloify`
-integration, using protocol v2. Firmware installation and upstream Q2-Pod integration
+integration, using protocol v2, or the relay can [stand in for Spotify's librespot](#in-place-of-spotifys-librespot)
+on a Q2 Pod release. Firmware installation and upstream Q2-Pod integration
 are separate; this wizard does not flash firmware. Future Apps installation can use
 configuration-only export. Delay and Quality settings remain in Streaming Configuration.
 [Card details](card/README.md), [manual development setup](docs/manual-setup.md), and
@@ -92,6 +93,61 @@ soloify --data ~/.soloify-bridge/data diagnostics     # native
 # Docker: use the installation-specific compose file, never a different data directory
 docker compose -f ~/.soloify-bridge/compose.json exec -T -u soloify soloify soloify diagnostics
 ```
+
+## In place of Spotify's librespot
+
+Q2 Pod's releases have no Soloify row, but the relay can take librespot's place in the
+card's `.spotify` folder: **Streaming → Spotify** then plays through the bridge, with
+Now Playing, browsing, queue and controls. The firmware starts `.spotify/run`
+and talks to `/tmp/q2-librespot.*`, the relay's own defaults, and the bridge tells the
+page what it can't do, so the download rows are hidden. Spotify's librespot is gone
+until you put it back.
+
+1. Set up the bridge with the [guided setup](#guided-setup) (or the [manual setup](docs/manual-setup.md)).
+   Its exported `.soloify` folder holds every file below; use the files from one
+   release together, as the relay and the bridge must speak the same protocol.
+2. With the card in a computer, copy `.spotify`'s `librespot`, `run` and `aplay.sh`
+   somewhere safe, such as a `.spotify-backup` folder at the card's root. Leave
+   `.spotify/cache` where it is.
+3. Copy the exported files into `.spotify`:
+
+   | From `.soloify` | To `.spotify` |
+   | --- | --- |
+   | `q2-soloify` | `librespot` (the relay, renamed) |
+   | `run` | `run` |
+   | `aplay.sh` | `aplay.sh` |
+   | `remote` | `remote` |
+
+   The relay must be named `librespot`, with no `q2-soloify` in `.spotify`: `run`
+   starts `q2-soloify` first when there is one, and the firmware stops the service
+   with `killall librespot`, which would miss it. Make the first three executable
+   (`chmod 755`) and `remote` private (`chmod 600`). A `.soloify` folder left on the
+   card does nothing: without a `q2app` file the firmware doesn't list it.
+4. Optionally, set the delay and quality, which the firmware has no rows for here:
+   `.spotify/.delay` holds the buffer target in milliseconds and `.spotify/.quality`
+   96, 128 or 160 (kbit/s), one integer each. Without them the relay buffers 1 s on
+   the LAN and 4 s beyond it, at the bridge's bitrate (160 by default).
+5. Put the card back, open **Streaming → Spotify**, and choose **soloify** in the
+   phone's Spotify device picker.
+
+While it's installed:
+
+- **Don't press Update or Remove on Spotify in the App Store.** Update writes the real
+  librespot over the relay; Remove deletes `.spotify` but its cache, `remote` with it.
+  Erase Spotify Data is safe: it deletes only the cache and the logs.
+- The row, the page and its messages still say Spotify. The Spotify Cache setting
+  doesn't apply, and Sign Out answers that it's done on the server. The relay's
+  "copy remote to .soloify" message means `.spotify/remote` here.
+- To update, copy a newer release's relay over `.spotify/librespot` and its `run`
+  and `aplay.sh` beside it. When the bridge's addresses change, export only `remote`
+  and copy it to `.spotify/remote`.
+- To go back to librespot, copy the backed-up files into `.spotify` and delete
+  `remote`, `.delay` and `.quality`.
+
+This is how the M1 ran in [step 3](docs/step3.md) and [step 4](docs/step4-runbook.md),
+on older firmware. On a Q2, so far only the relay's build has been checked, under
+qemu against the Q2's stock V1.32 libraries and ffmpeg. Search, Bluetooth output and
+scrub haven't been tried with the current firmware.
 
 ## Status
 
