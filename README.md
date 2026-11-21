@@ -30,9 +30,7 @@ the wizard. Remote Docker engines are unsupported.
 Install Docker using its official instructions for
 [macOS](https://docs.docker.com/desktop/setup/install/mac-install/),
 [Windows](https://docs.docker.com/desktop/setup/install/windows-install/), or
-[Linux](https://docs.docker.com/engine/install/).
-On NixOS, enable `virtualisation.docker.enable`, add your user to the Docker group,
-rebuild your configuration, and log in again. Native setup requires
+[Linux](https://docs.docker.com/engine/install/). Native setup requires
 [Nix](https://nixos.org/download/) and PulseAudio compatibility. The wizard provisions
 its Python dependencies after you select a usable method.
 
