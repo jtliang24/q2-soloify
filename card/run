@@ -1,7 +1,39 @@
 #!/bin/sh
 # Q2 Pod calls this synchronously; only the background loop owns the pid file.
 cd "$(dirname "$0")" || exit 1
-base=${SOLOIFY_Q2POD:-/tmp/q2-librespot}
+# The device, from the hardware, which no firmware changes: /dev/fb0 is 320 x 375 on the Q2 and
+# 320 x 480 on the M1 Plus (two pages each, so a virtual height of 750 or 960), and only the M1
+# Plus has the Goodix touchscreen. q2, m1plus, or nothing when neither fits. SOLOIFY_ROOT: tests.
+device() {
+    root=${SOLOIFY_ROOT:-}
+    if grep -q Goodix-CTP "$root/proc/bus/input/devices" 2>/dev/null; then echo m1plus; return; fi
+    read -r size 2>/dev/null < "$root/sys/class/graphics/fb0/virtual_size" || return
+    h=${size#320,}
+    case $h in '' | *[!0-9]*) return ;; esac
+    if [ $((h % 480)) -eq 0 ]; then echo m1plus; elif [ $((h % 375)) -eq 0 ]; then echo q2; fi
+}
+# Which loop. The relay, at the base Spotify's page reads, everywhere but in .soloify on a Q2: in
+# .spotify (the swap's copy), and in .soloify on the M1 Plus, whose firmware has its own Soloify row.
+# In .soloify on a Q2 the caller is upstream Q2 Pod's card-app host, so the Soloify app's page: the
+# manager, at a card app's base. For tests: SOLOIFY_Q2POD names the relay's base and keeps the relay
+# loop, SOLOIFY_RELAY_BASE only names it, and SOLOIFY_MANAGE names the manager's base.
+mode=relay
+base=${SOLOIFY_Q2POD:-${SOLOIFY_RELAY_BASE:-/tmp/q2-librespot}}
+if [ "${PWD##*/}" = .soloify ]; then
+    case $(device) in
+    m1plus)
+        # The M1 Plus's firmware lists any folder with a q2app as a card app: a second Soloify row,
+        # beside its own. The manager is the Q2's, so the file goes.
+        rm -f ./q2app
+        ;;
+    q2)
+        if [ -z "${SOLOIFY_Q2POD:-}" ]; then
+            mode=manage
+            base=${SOLOIFY_MANAGE:-/tmp/q2-soloify}
+        fi
+        ;;
+    esac
+fi
 if [ "${1:-}" != --loop ]; then
     # setsid keeps Q2 Pod's short-lived system() shell separate from the service.
     setsid /bin/sh ./run --loop >> ./spot.log 2>&1 < /dev/null &
@@ -30,11 +62,30 @@ cleanup() {
     exit 0
 }
 trap cleanup TERM INT
+if [ "$mode" = manage ]; then
+    # The Soloify app's page. It ends itself after 2 min unused, or at the page's stop op (exit 0),
+    # and the loop with it; the firmware starts it again from its row or its open page.
+    backoff=5
+    while :; do
+        SOLOIFY_PARENT=$$ SOLOIFY_Q2POD=$base ./q2-soloify --manage &
+        child=$!
+        wait "$child"
+        status=$?
+        child=
+        [ "$status" -ne 0 ] || cleanup
+        sleep "$backoff" &
+        sleeper=$!
+        wait "$sleeper"
+        sleeper=
+        backoff=$((backoff * 2))
+        [ "$backoff" -le 60 ] || backoff=60
+    done
+fi
 bin=./q2-soloify
 [ -x "$bin" ] || bin=./librespot # step 3's temporary compatibility installation
 backoff=5
 while :; do
-    SOLOIFY_PARENT=$$ "$bin" -q &
+    SOLOIFY_PARENT=$$ SOLOIFY_Q2POD=$base "$bin" -q &
     child=$!
     wait "$child"
     child=
