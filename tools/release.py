@@ -65,6 +65,7 @@ def prepare(out: Path, wheel: Path, *, relay: Path | None = None, card: Path | N
             "q2-soloify": binary,
             "run": (ROOT / "card/run").read_bytes(),
             "aplay.sh": (ROOT / "card/aplay.sh").read_bytes(),
+            "q2app": (ROOT / "card/q2app").read_bytes(),
             "VERSION": (VERSION + "\n").encode(),
         }
         card_path = out / f"soloify-card-{VERSION}.zip"
@@ -72,7 +73,7 @@ def prepare(out: Path, wheel: Path, *, relay: Path | None = None, card: Path | N
             for name, content in files.items():
                 entry = zipfile.ZipInfo(f".soloify/{name}", date_time=(2026, 1, 1, 0, 0, 0))
                 entry.create_system = 3
-                entry.external_attr = (0o100755 if name != "VERSION" else 0o100644) << 16
+                entry.external_attr = (0o100644 if name in ("VERSION", "q2app") else 0o100755) << 16
                 archive.writestr(entry, content)
     else:
         card_path = out / f"soloify-card-{VERSION}.zip"

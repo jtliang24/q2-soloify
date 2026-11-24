@@ -265,11 +265,14 @@ def test_private_export_identity_and_distinct_ports(tmp_path, capsys):
         f"home.example 8443 {identity.token} sha256={identity.pin}",
     ]
     folder = tmp_path / ".soloify"
-    setup.export_card(folder, remote, {"q2-soloify": b"bin", "run": b"sh", "aplay.sh": b"sh"})
+    setup.export_card(
+        folder, remote, {"q2-soloify": b"bin", "run": b"sh", "aplay.sh": b"sh", "q2app": b"app"}
+    )
     (folder / ".quality").write_text("96")
     setup.export_card(folder, remote, None)
     assert (folder / "remote").stat().st_mode & 0o777 == 0o600
     assert (folder / "run").stat().st_mode & 0o777 == 0o755
+    assert (folder / "q2app").stat().st_mode & 0o777 == 0o644
     assert (folder / ".quality").read_text() == "96"
     assert before == {p.name: p.read_bytes() for p in (data / "bridge").iterdir()}
 

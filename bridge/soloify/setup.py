@@ -181,7 +181,13 @@ def validate_mips(data: bytes) -> None:
 
 def card_files(archive: bytes) -> dict[str, bytes]:
     with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-        expected = {".soloify/q2-soloify", ".soloify/run", ".soloify/aplay.sh", ".soloify/VERSION"}
+        expected = {
+            ".soloify/q2-soloify",
+            ".soloify/run",
+            ".soloify/aplay.sh",
+            ".soloify/q2app",
+            ".soloify/VERSION",
+        }
         if set(bundle.namelist()) != expected or len(bundle.namelist()) != len(expected):
             raise ValueError("Card ZIP has unexpected or missing files")
         files = {Path(name).name: bundle.read(name) for name in expected}
@@ -195,10 +201,10 @@ def export_card(folder: Path, remote: str, files: dict[str, bytes] | None) -> No
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     if files:
         for name, content in files.items():
-            if name not in {"q2-soloify", "run", "aplay.sh"}:
+            if name not in {"q2-soloify", "run", "aplay.sh", "q2app"}:
                 raise ValueError("Unexpected card file")
             private_write(folder / name, content)
-            (folder / name).chmod(0o755)
+            (folder / name).chmod(0o644 if name == "q2app" else 0o755)
     private_write(folder / "remote", remote.encode())
 
 
