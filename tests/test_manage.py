@@ -101,7 +101,7 @@ async def test_status_delay_and_quality_without_remote(tmp_path, manager):
     assert "bridge" not in rows  # nothing to check without a remote
     assert rows["delay"][:4] == ["list", "delay", "Delay", "Automatic"]
     assert rows["quality"][:4] == ["list", "quality", "Quality", "160 kbit/s"]
-    assert list(rows) == ["slot", "paired", "delay", "quality"]
+    assert list(rows) == ["slot", "paired", "use", "delay", "quality"]  # use: test_swap
 
 
 async def test_spotify_slot_by_content(tmp_path, manager):

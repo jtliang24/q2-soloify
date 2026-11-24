@@ -20,6 +20,8 @@
 #include <sys/socket.h>
 #include <sys/prctl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -43,9 +45,12 @@ typedef unsigned long long uint64_t;
 
 #define EPERM 1
 #define ENOENT 2
+#define ESRCH 3
 #define EINTR 4
 #define EAGAIN 11
+#define EEXIST 17
 #define EINPROGRESS 150
+#define O_RDONLY 0
 #define O_WRONLY 1
 #define O_APPEND 0x8
 #define O_NONBLOCK 0x80
@@ -89,6 +94,15 @@ struct timespec { long tv_sec, tv_nsec; };
 struct pollfd { int fd; short events, revents; };
 struct sockaddr;
 struct sockaddr_un { unsigned short sun_family; char sun_path[108]; };
+/* glibc's struct dirent for o32, without large-file offsets (readdir, not readdir64) */
+struct dirent {
+    unsigned long d_ino;
+    long d_off;
+    unsigned short d_reclen;
+    unsigned char d_type;
+    char d_name[256];
+};
+typedef struct __dirstream DIR;
 struct addrinfo {
     int ai_flags, ai_family, ai_socktype, ai_protocol;
     socklen_t ai_addrlen;
@@ -109,6 +123,10 @@ int socket(int, int, int), connect(int, const struct sockaddr *, socklen_t), bin
 int getpgid(int);
 int getpid(void), unlink(const char *), rename(const char *, const char *);
 int getppid(void), prctl(int, ...), flock(int, int);
+int fsync(int), mkdir(const char *, unsigned);
+DIR *opendir(const char *);
+struct dirent *readdir(DIR *);
+int closedir(DIR *);
 int listen(int, int), accept(int, struct sockaddr *, socklen_t *);
 int setsockopt(int, int, int, const void *, socklen_t), getsockopt(int, int, int, void *, socklen_t *);
 int getaddrinfo(const char *, const char *, const struct addrinfo *, struct addrinfo **);

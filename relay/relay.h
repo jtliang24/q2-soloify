@@ -86,6 +86,13 @@ int q2pod_clients(void);           /* browse connections still open */
 int manage_main(void);
 /* The reply to one well-framed request (raw, n bytes, id already checked) in out: its length */
 int manage_reply(const char *id, const char *raw, int n, char *out, int cap);
+/* swap.c: the relay into the Spotify slot (../.spotify) and out again. swap_rows: which of the
+ * manager's swap rows to show, given whether the slot runs our relay (ours) and an older copy of it
+ * (older). swap_in and swap_out: 1 when done, 0 not; msg says what happened, for the page. */
+enum { SWAP_USE = 1, SWAP_UPDATE = 2, SWAP_REPAIR = 4, SWAP_RESTORE = 8 };
+int swap_rows(int ours, int older);
+int swap_in(char *msg, int cap);
+int swap_out(char *msg, int cap);
 /* main.c: dial ep and say hello, then hang up; 0 when the bridge answered ok */
 int relay_probe(const struct endpoint *ep);
 

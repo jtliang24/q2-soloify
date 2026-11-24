@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-SOURCES = ["main", "tls", "wire", "remote", "audio", "ogg", "sink", "q2pod", "manage"]
+SOURCES = ["main", "tls", "wire", "remote", "audio", "ogg", "sink", "q2pod", "manage", "swap"]
 WARN = ["-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter"]
 # q2-pod's FLAGS, as compile_helper changes them for a dynamically linked helper
 MIPS = [

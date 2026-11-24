@@ -3,7 +3,8 @@
  * so ./remote, ./.delay and ./.quality are Soloify's own, and ../.spotify is the Spotify slot.
  *
  * The first level (op "menu") is menu_rows: Status (what the Spotify slot holds, whether a remote
- * is there, whether the bridge answers a hello), then Delay and Quality, each a list of choices.
+ * is there, whether the bridge answers a hello), the swap's rows as the slot calls for them (Use,
+ * Update, Repair, Restore: swap.c), then Delay and Quality, each a list of choices.
  * The page ends itself after IDLE_MS without a request, and at the reserved op "stop".
  *
  * It runs on the Q2 only (card/run): the M1 Plus's firmware has its own Soloify row and settings.
@@ -100,7 +101,7 @@ static int hex_is(const char *hex, const unsigned char md[32]) {
 }
 
 /* What the Spotify slot runs: its run prefers q2-soloify, then librespot. "Our relay" by content:
- * the same as .soloify/q2-soloify, or as the copy step 3's swap recorded in backup/relay.sha256. */
+ * the same as .soloify/q2-soloify, or as the copy swap.c recorded in backup/relay.sha256. */
 static const char *slot_binary(void) {
     static const char *const names[] = {SLOT "/q2-soloify", SLOT "/librespot"};
     for (int i = 0; i < 2; ++i) {
@@ -203,9 +204,8 @@ static int setting_set(const char *name, int v) {
 
 /* The first level's rows, in order. fill writes the title and subtitle, and returns 0 to leave the
  * row out.
- * Step 3 (the swap) adds, after Status, action rows "use", "update", "repair" and "restore", each
- * shown only while the slot's state (st.slot) calls for it, with ops of the same
- * names in ops[].
+ * After Status come the swap's action rows "use", "update", "repair" and "restore", each shown only
+ * while the slot's state (st.slot, swap_rows) calls for it, with ops of the same names in ops[].
  * Step 5 (pairing) adds an info row "away" after "bridge", and a list row "pair" before Delay. */
 struct menu_row {
     const char *kind, *uri;
@@ -233,6 +233,34 @@ static int fill_bridge(char *title, char *sub, int cap) {
     snprintf(sub, cap, "%s", words[probe.state]);
     return 1;
 }
+/* The swap's rows, as swap_rows finds them for the slot's state, once per slot_check */
+static int swap_shown(int which) {
+    static uint64_t at;
+    static int rows;
+    if (at != st.slot_at) at = st.slot_at, rows = swap_rows(slot_ours(), st.slot == SLOT_OURS_OLD);
+    return rows & which;
+}
+static int fill_use(char *title, char *sub, int cap) {
+    snprintf(title, cap, "Use Soloify for Spotify");
+    snprintf(sub, cap, "Spotify's librespot is kept");
+    return swap_shown(SWAP_USE);
+}
+static int fill_update(char *title, char *sub, int cap) {
+    snprintf(title, cap, "Update Spotify's copy");
+    if (*st.version) snprintf(sub, cap, "To Soloify v%s", st.version);
+    else *sub = 0;
+    return swap_shown(SWAP_UPDATE);
+}
+static int fill_repair(char *title, char *sub, int cap) {
+    snprintf(title, cap, "Repair");
+    snprintf(sub, cap, "Spotify was updated: use Soloify again");
+    return swap_shown(SWAP_REPAIR);
+}
+static int fill_restore(char *title, char *sub, int cap) {
+    snprintf(title, cap, "Restore Spotify");
+    snprintf(sub, cap, "Put librespot back");
+    return swap_shown(SWAP_RESTORE);
+}
 static int fill_delay(char *title, char *sub, int cap) {
     snprintf(title, cap, "Delay");
     delay_text(delay_now(), sub, cap);
@@ -247,6 +275,10 @@ static const struct menu_row menu_rows[] = {
     {"info", "slot", fill_slot},
     {"info", "paired", fill_paired},
     {"info", "bridge", fill_bridge},
+    {"action", "use", fill_use},
+    {"action", "update", fill_update},
+    {"action", "repair", fill_repair},
+    {"action", "restore", fill_restore},
     {"list", "delay", fill_delay},
     {"list", "quality", fill_quality},
 };
@@ -308,7 +340,17 @@ static void op_stop(struct page *p, const char *id, const char *arg) {
     stopping = 1;
     header(p, id, "ok", "");
 }
-/* Step 3 adds use, update, repair and restore; step 5 the pairing's ops. */
+/* The swap (swap.c): Use, Update and Repair all put the relay in place; the level, asked again,
+ * shows the slot as it now is. */
+static void swap_reply(struct page *p, const char *id, int in) {
+    char msg[120];
+    int ok = in ? swap_in(msg, sizeof msg) : swap_out(msg, sizeof msg);
+    st.slot_at = 0;
+    header(p, id, ok ? "ok" : "error", msg);
+}
+static void op_use(struct page *p, const char *id, const char *arg) { swap_reply(p, id, 1); }
+static void op_restore(struct page *p, const char *id, const char *arg) { swap_reply(p, id, 0); }
+/* Step 5 adds the pairing's ops. */
 static const struct {
     const char *name;
     void (*run)(struct page *p, const char *id, const char *arg);
@@ -318,6 +360,10 @@ static const struct {
     {"quality", op_quality},
     {"setdelay", op_setdelay},
     {"setquality", op_setquality},
+    {"use", op_use},
+    {"update", op_use},
+    {"repair", op_use},
+    {"restore", op_restore},
     {"stop", op_stop},
 };
 
