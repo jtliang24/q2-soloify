@@ -7,6 +7,8 @@
 #define COVERS 4
 #define CLIENTS 4
 static int enabled, control = -1, browser = -1, lockfd = -1, online, configured;
+static int managing; /* --manage: the page is the manager's (manage.c), not the bridge's */
+static uint64_t last_request; /* the last browse connection accepted, for --manage's idle end */
 static char base[96], current[TEXT] = "state=none\n", upstream[TEXT] = "state=none\n";
 static char prime[TEXT]; /* position of the first audio after connect or a reset */
 static uint64_t stamped;
@@ -246,33 +248,53 @@ static int bind_socket(const char *suffix, int type) {
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     return fd;
 }
-void q2pod_start(void) {
+/* The base from SOLOIFY_Q2POD (else fallback), its lock and the browse socket, with the control
+ * socket too unless managing; 0 when another process owns the base. */
+static int open_base(const char *fallback) {
     const char *prefix = getenv("SOLOIFY_Q2POD");
     char file[128];
     if (prefix && strlen(prefix) > 94) {
         say("q2pod: socket prefix too long");
         quitting = 1;
-        return;
+        return 0;
     }
-    snprintf(base, sizeof base, "%s", prefix && *prefix ? prefix : "/tmp/q2-librespot");
+    snprintf(base, sizeof base, "%s", prefix && *prefix ? prefix : fallback);
     path(file, ".lock");
     lockfd = open(file, O_WRONLY | O_CREAT, 0600);
     if (lockfd < 0 || flock(lockfd, LOCK_EX | LOCK_NB) < 0) {
         say("q2pod: another relay owns %s", base);
         quitting = 1;
-        return;
+        return 0;
     }
     fcntl(lockfd, F_SETFD, FD_CLOEXEC);
     enabled = 1;
+    last_request = now_ms();
     for (int i = 0; i < CLIENTS; ++i) clients[i].fd = -1;
-    control = bind_socket(".sock", SOCK_DGRAM);
+    if (!managing) control = bind_socket(".sock", SOCK_DGRAM);
     browser = bind_socket(".browse.sock", SOCK_STREAM);
-    if (control < 0 || browser < 0 || listen(browser, CLIENTS) < 0) {
+    if ((!managing && control < 0) || browser < 0 || listen(browser, CLIENTS) < 0) {
         say("q2pod: can't bind the local sockets");
         quitting = 1;
     }
+    return 1;
+}
+void q2pod_start(void) {
+    if (!open_base("/tmp/q2-librespot")) return;
     publish("", "none", 0);
     say("q2pod: state and controls ready at %s", base);
+}
+/* --manage: only the page, its requests answered by manage_reply. */
+int q2pod_serve(const char *fallback) {
+    managing = 1;
+    if (!open_base(fallback)) return 0;
+    say("q2pod: manager page ready at %s", base);
+    return 1;
+}
+uint64_t q2pod_last_request(void) { return last_request; }
+int q2pod_clients(void) {
+    int n = 0;
+    for (int i = 0; i < CLIENTS; ++i) n += clients[i].fd >= 0;
+    return n;
 }
 void q2pod_config(int valid) { configured = valid; }
 void q2pod_link(int up) {
@@ -483,6 +505,10 @@ static void reply(int i) {
         ++end;
     }
     if (end == start) goto bad;
+    if (managing) {
+        clients[i].out = manage_reply(clients[i].id, buf, n, clients[i].reply, sizeof clients[i].reply);
+        return;
+    }
     retry_remote = 1;
     if (!configured) local_reply(i, "error", "Copy remote to .soloify (see the Soloify guide)");
     else if (!online) local_reply(i, "offline", "Can't reach the Spotify bridge");
@@ -504,6 +530,7 @@ static void browse(void) {
         if (clients[i].fd < 0) {
             if ((r = accept(browser, NULL, NULL)) < 0) continue;
             clients[i].fd = r;
+            last_request = now_ms();
             clients[i].n = clients[i].out = clients[i].sent = clients[i].bad = clients[i].waiting = 0;
             clients[i].id[0] = 0;
             clients[i].buf[0] = 0;
@@ -543,6 +570,10 @@ void q2pod_tick(void) {
     char buf[64];
     int n;
     if (!enabled) return;
+    if (managing) {
+        browse();
+        return;
+    }
     while ((n = read(control, buf, sizeof buf - 1)) > 0) {
         buf[n] = 0;
         int valid = n == 1 && strchr("pPsnb", buf[0]) != NULL;
@@ -585,7 +616,7 @@ void q2pod_tick(void) {
 }
 void q2pod_stop(void) {
     if (!enabled) return;
-    audio_enable(0);
+    if (!managing) audio_enable(0);
     const char *suffixes[] = {".sock", ".browse.sock", ".state", ".state.jpg", ".pause-error"};
     char file[128];
     for (unsigned i = 0; i < sizeof suffixes / sizeof *suffixes; ++i) {
@@ -593,7 +624,8 @@ void q2pod_stop(void) {
         unlink(file);
     }
     for (int i = 0; i < CLIENTS; ++i) if (clients[i].fd >= 0) close(clients[i].fd);
-    close(control), close(browser), close(lockfd);
+    if (control >= 0) close(control);
+    close(browser), close(lockfd);
     for (int i = 0; i < COVERS; ++i) free(covers[i].data);
     enabled = 0;
 }

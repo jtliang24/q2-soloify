@@ -76,6 +76,18 @@ void q2pod_capture(void); /* a fresh encoder begins after ordered control bounda
 int q2pod_wants(void);
 int q2pod_audio(void);
 int q2pod_ready(void);
+/* --manage's page (manage.c): only the browse socket, at SOLOIFY_Q2POD or fallback; 0 when another
+ * process owns it */
+int q2pod_serve(const char *fallback);
+uint64_t q2pod_last_request(void); /* when the last browse connection came */
+int q2pod_clients(void);           /* browse connections still open */
+
+/* manage.c: q2-soloify --manage, the Soloify app's page on upstream Q2 Pod */
+int manage_main(void);
+/* The reply to one well-framed request (raw, n bytes, id already checked) in out: its length */
+int manage_reply(const char *id, const char *raw, int n, char *out, int cap);
+/* main.c: dial ep and say hello, then hang up; 0 when the bridge answered ok */
+int relay_probe(const struct endpoint *ep);
 
 /* audio.c: the ring, the Ogg stream and the sink */
 void audio_start(int target_ms); /* a link is up, with this buffer target */

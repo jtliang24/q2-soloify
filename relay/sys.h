@@ -41,6 +41,8 @@ typedef unsigned uint32_t;
 typedef unsigned long long uint64_t;
 #define NULL ((void *)0)
 
+#define EPERM 1
+#define ENOENT 2
 #define EINTR 4
 #define EAGAIN 11
 #define EINPROGRESS 150
@@ -126,6 +128,7 @@ typedef struct ssl_ctx_st SSL_CTX;
 typedef struct ssl_method_st SSL_METHOD;
 typedef struct x509_st X509;
 typedef struct evp_md_st EVP_MD;
+typedef struct evp_md_ctx_st EVP_MD_CTX;
 #define SSL_VERIFY_NONE 0
 #define SSL_VERIFY_PEER 1
 #define SSL_ERROR_WANT_READ 2
@@ -157,6 +160,11 @@ X509 *SSL_get_peer_certificate(const SSL *);
 void X509_free(X509 *);
 const EVP_MD *EVP_sha256(void);
 int X509_digest(const X509 *, const EVP_MD *, unsigned char *, unsigned *);
+EVP_MD_CTX *EVP_MD_CTX_new(void);
+void EVP_MD_CTX_free(EVP_MD_CTX *);
+int EVP_DigestInit_ex(EVP_MD_CTX *, const EVP_MD *, void *);
+int EVP_DigestUpdate(EVP_MD_CTX *, const void *, size_t);
+int EVP_DigestFinal_ex(EVP_MD_CTX *, unsigned char *, unsigned *);
 void ERR_clear_error(void);
 #define SSL_CTX_set_min_proto_version(c, v) SSL_CTX_ctrl(c, SSL_CTRL_SET_MIN_PROTO_VERSION, v, NULL)
 #define SSL_CTX_set_mode(c, m) SSL_CTX_ctrl(c, SSL_CTRL_MODE, m, NULL)

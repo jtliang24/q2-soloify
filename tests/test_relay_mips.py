@@ -118,3 +118,30 @@ async def test_stock_decoder_joins_encoder_generations_without_a_blip(
         shutil.which("sh"),
         paused=paused,
     )
+
+
+async def test_device_build_serves_the_manager_page(tmp_path, device):
+    import tempfile
+
+    from test_manage import Manager, bridge_word, make_card
+
+    exe, rootfs = device
+    bridge = await Bridge(tmp_path / "data").start()
+    soloify = make_card(tmp_path / "card", exe, slot=exe.read_bytes())
+    (soloify / "remote").write_text(bridge.line() + "\n")
+    with tempfile.TemporaryDirectory(prefix="sf-") as folder:
+        m = Manager(soloify, Path(folder) / "m", ["qemu-mipsel", "-L", str(rootfs), str(exe)])
+        await m.start()
+        try:
+            head, rows = await m.menu()
+            assert head[1] == "ok" and rows["slot"][3] == "Soloify v0.0.9"  # SHA-256 on 1.1.1f
+            assert rows["paired"][3] == "Yes"
+            assert await bridge_word(m) == "Reachable (LAN)"
+            assert (await m.ask("setquality", "128"))[0][1] == "ok"
+            assert (soloify / ".quality").read_text() == "128"
+            assert (tmp_path / "card/.spotify/.quality").read_text() == "128"
+            assert (await m.ask("stop"))[0][1] == "ok"
+            assert await asyncio.wait_for(m.proc.wait(), 10) == 0
+        finally:
+            await m.stop()
+            await bridge.stop()
