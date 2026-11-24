@@ -57,13 +57,16 @@ The wizard guides you through:
    works, but device browsing, search and queue are unavailable.
 3. Choosing **at home** or **at home and away**, configuring a stable LAN address,
    and optionally forwarding the bridge's TCP port. See [away listening](docs/setup.md#away-listening).
-4. Starting the bridge, with automatic startup selected by default, and exporting a
-   complete `.soloify` folder with the matching MIPS relay, `run`, `aplay.sh`, and
-   private `remote`. Copy that hidden folder to the root of the device's card. Existing
-   installations can export only `remote`.
-5. Separate results for bridge readiness, file export, LAN playback, WAN verification,
-   and automatic Soloist renewal. Successful checks at home leave external verification
-   pending until you confirm playback over a phone hotspot with home Wi-Fi disconnected.
+4. Starting the bridge, with automatic startup selected by default.
+5. [Pairing the device by code](#pairing-the-device-by-code), so no file is copied.
+   Declining, or failing, exports a complete `.soloify` folder with the matching MIPS
+   relay, `run`, `aplay.sh`, `q2app` and a private `remote` instead. Copy that hidden
+   folder to the root of the device's card. Existing installations can export only
+   `remote`.
+6. Separate results for bridge readiness, device pairing or file export, LAN playback,
+   WAN verification, and automatic Soloist renewal. Successful checks at home leave
+   external verification pending until you confirm playback over a phone hotspot with
+   home Wi-Fi disconnected.
 
 The bridge computer must stay powered, awake, and connected. Docker needs to start
 at login/boot; native Linux uses a systemd user service. Setup explains lingering and
@@ -72,11 +75,18 @@ user audio availability for operation after logout. Rerun setup with the same `-
 Keep that directory private and backed up: it preserves the bridge identity, paired
 session, OAuth credentials and API key. Progress is stored separately without secrets.
 
-Q2-Pod firmware must include **Streaming → Soloify**, from the `step5-soloify`
-integration, using protocol v2, or the relay can [stand in for Spotify's librespot](#in-place-of-spotifys-librespot)
-on a Q2 Pod release. Firmware installation and upstream Q2-Pod integration
-are separate; this wizard does not flash firmware. Future Apps installation can use
-configuration-only export. Delay and Quality settings remain in Streaming Configuration.
+Which firmware runs it decides how Soloify gets onto the card:
+
+- **Upstream Q2 Pod 1.9.1 or later, on the Q2:** [install it from the App Store](#install-from-the-app-store).
+  Its Soloify app pairs, puts the relay in Spotify's place and takes it out again.
+- **The M1 Plus's firmware** (the q2-pod fork with the `step5-soloify` integration, protocol v2):
+  **Streaming → Soloify** is its own row. The one thing it takes from this page is
+  [pairing by code](#pairing-the-device-by-code); Delay and Quality stay in Streaming
+  Configuration.
+- **Any other Q2 Pod release:** the relay can [stand in for Spotify's librespot](#in-place-of-spotifys-librespot)
+  by hand.
+
+Firmware installation is separate; this wizard does not flash firmware.
 [Card details](card/README.md), [manual development setup](docs/manual-setup.md), and
 [troubleshooting/startup guidance](docs/setup.md) cover the remaining details.
 
@@ -92,10 +102,107 @@ soloify --data ~/.soloify-bridge/data diagnostics     # native
 docker compose -f ~/.soloify-bridge/compose.json exec -T -u soloify soloify soloify diagnostics
 ```
 
+### Pairing the device by code
+
+The device gets the bridge's addresses, token and certificate pin without a file
+copied by hand. The wizard offers it after the bridge starts, or later, on the computer
+running the bridge:
+
+```sh
+soloify pair-device            # native; python -m soloify.cli pair-device from a checkout
+docker compose -f ~/.soloify-bridge/compose.json exec -T -u soloify soloify soloify pair-device
+```
+
+(The Docker form is for a default `--root`; setup's own compose file is at
+`ROOT/compose.json`.) While it waits:
+
+1. On the Q2 open **Library → Apps → Soloify → Pair with server**. The Q2 finds the
+   bridge by a UDP broadcast on port 7444 and shows a six-digit code, such as `123 456`.
+2. Type the code on the computer. A match proves the Q2 reached this bridge, and the
+   bridge sends its `remote` lines through that connection.
+
+The wizard and `soloify pair-device` on the host answer the broadcast. A bridge in a
+container can't hear it, so with the Docker command above the Q2 doesn't find it: enter
+the computer's LAN address in the Q2's **Server address** row, or run the wizard, which
+answers for it. The same applies on guest Wi-Fi or with client isolation. Windows may
+show a Windows Firewall prompt for Python the first time: allow it on private networks,
+or the Q2 won't find the computer. **Pairing is LAN-only**: the bridge refuses it from
+any address outside the home network, and only while a `pair-device` is waiting.
+
+The paired device gets the LAN address and, when setup's away step is done, the WAN
+address too, with one token and pin. Without a WAN address `pair-device` ends with "Paired
+for home only"; run [setup's away step](docs/setup.md#away-listening), then pair again to
+listen away. With a raw IP address as the WAN address it warns that the address changes
+when your ISP changes it, so prefer a DDNS name. After pairing at home, the Q2's
+Soloify app shows *Away: not yet verified* until the first connection through the WAN
+address works, then *verified* with a date. It reads *not reached* after three WAN
+failures in a row, and then the address in setup needs fixing before pairing again.
+
+**On the M1 Plus** (and in the Spotify slot by hand, below) there is no Soloify app, but a
+relay with no `remote` pairs by itself: its Soloify (or Spotify) page shows the code
+as its error message, "Pair: enter 123 456 on your Soloify server". Run `soloify pair-device`,
+type the code, and press Retry. It has no address row, so the computer must answer the
+broadcast (the wizard or a native `pair-device`); otherwise copy `remote` as before. To pair
+again, delete `remote`.
+
+Pairing reuses the bridge's token, so every device paired earlier keeps working;
+`soloify remote --rotate` replaces it, which revokes them all. The protocol is in
+[docs/wire.md](docs/wire.md#pairing-pair-version-1).
+
+## Install from the App Store
+
+For a Q2 on **upstream Q2 Pod 1.9.1 or later**, where the App Store reads custom sources.
+It needs a release newer than `v0.0.1` published as the repository's Latest release
+([docs/releasing.md](docs/releasing.md#latest-and-prerelease)), because the App Store
+installs only that. Set up the bridge first ([guided setup](#guided-setup)).
+
+1. Add one line to `/mnt/mmc/.q2/custom-sources.list` (the card's `.q2` folder; make the
+   file if it isn't there):
+
+   ```text
+   jtliang24/q2-soloify Soloify
+   ```
+
+   Then open the App Store on the Q2 and **Install** Soloify.
+2. Open **Library → Apps → Soloify**. Choose **Pair with server**, run
+   [`soloify pair-device`](#pairing-the-device-by-code) on the bridge's computer (or let the
+   wizard do it) and type the code the Q2 shows.
+3. Choose **Use Soloify for Spotify**, then pick **soloify** in the phone's Spotify device
+   picker. **Streaming → Spotify** now plays through the bridge, with Now Playing,
+   browsing, queue and controls.
+
+The app's Status shows what the Spotify slot holds, whether the Q2 is paired, whether the
+bridge answers and the Away line. **Delay** (Automatic, 1, 2, 4 or 6 s) and **Quality**
+(96, 128 or 160 kbit/s) are its rows too: Streaming has none for Spotify. The swap is the
+[manual copy below](#in-place-of-spotifys-librespot), done for you: it backs up Spotify's
+`librespot`, `run` and `aplay.sh` to `.soloify/backup/`, leaves `.spotify/cache` alone and
+puts the relay in `.spotify`.
+
+- **Restore Spotify** (shown while the relay is in the slot) puts the backup back and
+  deletes `remote`, `.delay` and `.quality` from `.spotify`. Without a backup it removes
+  only Soloify's files; install Spotify from the App Store then.
+- **Repair** appears after an App Store **Update of Spotify**, which writes the real
+  librespot over the relay. It runs the swap again and keeps that librespot as the new backup.
+- **Update Spotify's copy** appears after a Soloify update, when the slot's relay is older
+  than `.soloify/q2-soloify`.
+- A Soloify **Update** replaces only the release's files: `remote`, `.delay`, `.quality` and
+  `backup/` stay. A Soloify **Remove** deletes the whole `.soloify`, `backup/` included,
+  but not `.spotify`, where the relay keeps working. **Restore Spotify before you Remove
+  Soloify**, or install Spotify from the App Store afterwards.
+- Spotify's own **Remove** deletes `.spotify`, `remote` and the relay with it. **Erase
+  Spotify Data** is safe: it deletes only the cache and the logs.
+
+Only the Q2 on upstream Q2 Pod has the app. The **M1 Plus** runs the same files but is
+unchanged apart from [pairing by code](#pairing-the-device-by-code): `run` tells the devices
+apart (the M1 Plus's `/sys/class/graphics/fb0/virtual_size` and its Goodix touchscreen; a
+device matching neither is taken for a Q2), and on the M1 Plus it deletes `.soloify/q2app`,
+so no second Soloify row appears next to the firmware's own.
+
 ## In place of Spotify's librespot
 
-Q2 Pod's releases have no Soloify row, but the relay can take librespot's place in the
-card's `.spotify` folder: **Streaming → Spotify** then plays through the bridge, with
+The manual way, for a Q2 Pod without the App Store's [Soloify app](#install-from-the-app-store)
+(or to do by hand what its swap does). Q2 Pod's releases have no Soloify row, but the relay can
+take librespot's place in the card's `.spotify` folder: **Streaming → Spotify** then plays through the bridge, with
 Now Playing, browsing, queue and controls. The firmware starts `.spotify/run`
 and talks to `/tmp/q2-librespot.*`, the relay's own defaults, and the bridge tells the
 page what it can't do, so the download rows are hidden. Spotify's librespot is gone
@@ -114,7 +221,7 @@ until you put it back.
    | `q2-soloify` | `librespot` (the relay, renamed) |
    | `run` | `run` |
    | `aplay.sh` | `aplay.sh` |
-   | `remote` | `remote` |
+   | `remote` | `remote` (or leave it out and [pair by code](#pairing-the-device-by-code)) |
 
    The relay must be named `librespot`, with no `q2-soloify` in `.spotify`: `run`
    starts `q2-soloify` first when there is one, and the firmware stops the service
@@ -134,8 +241,9 @@ While it's installed:
   librespot over the relay; Remove deletes `.spotify` but its cache, `remote` with it.
   Erase Spotify Data is safe: it deletes only the cache and the logs.
 - The row, the page and its messages still say Spotify. The Spotify Cache setting
-  doesn't apply, and Sign Out answers that it's done on the server. The relay's
-  "copy remote to .soloify" message means `.spotify/remote` here.
+  doesn't apply, and Sign Out answers that it's done on the server. With no
+  `.spotify/remote` the page shows the pairing code as its error message; the relay writes
+  `.spotify/remote`, and `.soloify/remote` too.
 - To update, copy a newer release's relay over `.spotify/librespot` and its `run`
   and `aplay.sh` beside it. When the bridge's addresses change, export only `remote`
   and copy it to `.spotify/remote`.
