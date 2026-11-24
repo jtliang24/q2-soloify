@@ -1,4 +1,4 @@
-"""Serve the bridge, authorize Spotify browsing, or print card configuration."""
+"""Serve the bridge, authorize Spotify browsing, pair a device, or print card configuration."""
 
 import argparse
 import asyncio
@@ -8,7 +8,7 @@ import signal
 import sys
 from pathlib import Path
 
-from . import __version__, audio, browse, server, soloist, spotify, ws
+from . import __version__, audio, browse, pairing, server, soloist, spotify, ws
 from .player import Covers, Player
 
 PORT = 7443
@@ -47,7 +47,15 @@ async def serve(args: argparse.Namespace) -> int:
     async def session(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await audio.Session(player, encoder, args.inflight, browser).run(reader, writer)
 
-    listener = await server.Server(identity, session).start(args.listen, args.port)
+    pair = pairing.Pairing(identity)
+    admin_path = args.data / pairing.ADMIN_SOCKET
+    try:
+        admin = await pair.serve_admin(admin_path)
+    except OSError as e:
+        # Playback doesn't need it: without the socket, pair requests are refused
+        server.log.warning("no pairing socket at %s: %s", admin_path, e)
+        admin = None
+    listener = await server.Server(identity, session, pair).start(args.listen, args.port)
     server.log.info(
         "listening on %s, pin sha256=%s, %s at %d kbit/s",
         args.port,
@@ -81,6 +89,9 @@ async def serve(args: argparse.Namespace) -> int:
         await asyncio.gather(*tasks, return_exceptions=True)
         await covers.close()
         await api.close()
+        if admin:
+            admin.close()
+            admin_path.unlink(missing_ok=True)
     return 1 if failed else 0
 
 
@@ -90,13 +101,36 @@ def remote(args: argparse.Namespace) -> int:
         identity.rotate()
         print(
             "New token: devices with the old one are refused from their next connection. "
-            "Copy them these lines.",
+            "Pair them again (soloify pair-device) or copy them these lines.",
             file=sys.stderr,
         )
     lines = server.remote_lines(identity, args.lan or [server.lan_address()], args.port)
     lines += server.remote_lines(identity, args.wan or [], args.wan_port or args.port)
     print("\n".join(lines))
     return 0
+
+
+def pair_device(args: argparse.Namespace) -> int:
+    if args.wan_port and not args.wan:
+        print("--wan-port needs --wan", file=sys.stderr)
+        return 2
+    try:
+        endpoints = pairing.load_endpoints(args.data, args.lan, args.port, args.wan, args.wan_port)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    try:
+        return asyncio.run(
+            pairing.pair_device(
+                args.data / pairing.ADMIN_SOCKET,
+                endpoints,
+                discovery=not args.no_discovery and not pairing.in_container(),
+                timeout=args.timeout,
+            )
+        )
+    except KeyboardInterrupt:
+        print("\nPairing cancelled.")
+        return 130
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -142,6 +176,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--rotate", action="store_true", help="replace the token first, revoking every device"
     )
+    p = sub.add_parser("pair-device", help="pair a Q2 by the code it shows")
+    p.add_argument("--lan", help="LAN address the Q2 gets (default: setup's, else this one's)")
+    p.add_argument("--port", type=tcp_port, help="the bridge's port (default: setup's, else 7443)")
+    p.add_argument("--wan", help="name or address from outside (default: setup's away step)")
+    p.add_argument("--wan-port", type=tcp_port, help="external TCP port (default: --port)")
+    p.add_argument(
+        "--no-discovery",
+        action="store_true",
+        help="don't answer the Q2's broadcasts on UDP 7444 (the setup wizard answers them)",
+    )
+    p.add_argument("--timeout", type=float, default=600, help="seconds to wait (default 600)")
     p = sub.add_parser("setup", help="guided bridge setup and card export")
     p.add_argument("--check", action="store_true", help="read-only prerequisite report")
     p.add_argument(
@@ -177,6 +222,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(serve(args))
     if args.command == "remote":
         return remote(args)
+    if args.command == "pair-device":
+        return pair_device(args)
     try:
         asyncio.run(spotify.login(args.data, args.client_id, args.timeout))
     except (spotify.APIError, OSError) as e:

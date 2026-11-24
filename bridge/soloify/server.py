@@ -44,7 +44,8 @@ class Identity:
         der = x509.load_pem_x509_certificate(self.cert.read_bytes()).public_bytes(
             serialization.Encoding.DER
         )
-        self.pin = hashlib.sha256(der).hexdigest()
+        self.fingerprint = hashlib.sha256(der).digest()
+        self.pin = self.fingerprint.hex()
 
     @property
     def token(self) -> str:
@@ -99,9 +100,11 @@ class Server:
     replaces the current one, whose link may be dead without either side knowing yet (a network
     switch)."""
 
-    def __init__(self, identity: Identity, session: Session):
+    def __init__(self, identity: Identity, session: Session, pairing=None):
         self.identity = identity
         self.session = session
+        # A pairing.Pairing answers `pair` lines in place of hello; without one they are refused
+        self.pairing = pairing
         self.current: asyncio.Task | None = None
 
     async def start(self, host: str | None, port: int) -> asyncio.Server:
@@ -113,6 +116,9 @@ class Server:
         peer = writer.get_extra_info("peername")
         try:
             line = await asyncio.wait_for(reader.readline(), HELLO_TIMEOUT)
+            if self.pairing and line.startswith(b"pair ") and len(line) <= wire.HELLO_MAX:
+                await self.pairing.relay(line, peer[0], reader, writer)
+                return
             if len(line) > wire.HELLO_MAX or not wire.hello_ok(line, self.identity.token):
                 log.warning("relay %s: bad hello", peer)
                 return
