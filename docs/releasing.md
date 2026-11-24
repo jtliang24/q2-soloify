@@ -10,7 +10,7 @@ nix develop
 python relay/build.py --rootfs ../q2-pod/build-m1/stock.squashfs
 python tools/release.py --write-bootstrap
 python -m build --wheel --no-isolation --outdir build/wheel
-python tools/release.py --wheel build/wheel/soloify-0.0.1-py3-none-any.whl --relay build/relay/q2-soloify
+python tools/release.py --wheel build/wheel/soloify-0.0.2-py3-none-any.whl --relay build/relay/q2-soloify
 ```
 
 Versions in `pyproject.toml`, `soloify/__init__.py`, `setup_bootstrap.py`, card VERSION,
@@ -48,7 +48,7 @@ The workflow's pull uses an empty Docker credential directory so maintainer logi
 cannot hide private-package failures. Check from a tester machine without logging in:
 
 ```sh
-docker pull ghcr.io/jtliang24/q2-soloify:0.0.1
+docker pull ghcr.io/jtliang24/q2-soloify:0.0.2
 ```
 
 See [GitHub's package visibility instructions](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).

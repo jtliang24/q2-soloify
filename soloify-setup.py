@@ -17,7 +17,7 @@ import venv
 import zipfile
 from pathlib import Path
 
-VERSION = "0.0.1"
+VERSION = "0.0.2"
 REPOSITORY = "jtliang24/q2-soloify"
 RELEASE = f"https://github.com/{REPOSITORY}/releases/download/v{VERSION}"
 IMAGE = f"ghcr.io/{REPOSITORY}:{VERSION}"
