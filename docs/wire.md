@@ -181,3 +181,85 @@ continues. Queue/settings use the local Soloist WebSocket, with one pending
 command/query, a three-second deadline, and a new connection after a timeout to
 exclude late responses. Queue skip re-fetches and checks URI and entry UID before
 each skip; external changes can still race after the final check.
+
+## Pairing (`pair` version 1)
+
+Pairing gives a device its `remote` lines without copying a file. It has its own version, 1,
+independent of the audio protocol's 2, and uses the same TLS port (7443) and certificate. The
+bridge answers `pair` only while `soloify pair-device` (or setup's pairing step) is waiting.
+All text below is ASCII; `\n` is a single LF byte; hex is lowercase.
+
+### Discovery (UDP 7444)
+
+1. The relay picks a nonce: 16 random bytes, written as 32 lowercase hex characters (`NONCE`).
+2. It broadcasts the datagram `SOLOIFY-PAIR 1 NONCE` (exactly those bytes, 47 of them, no
+   newline; the bridge also accepts one trailing `\n`) to UDP port 7444 at the subnet's
+   broadcast address, three times over 2 s, from one UDP socket.
+3. The listener (on the host, never in a container: broadcasts don't reach one) answers each
+   valid datagram from a private source address by unicast to that datagram's source address
+   and port: `SOLOIFY-HERE 1 NONCE HOST PORT`, no newline, where `HOST` is the bridge's LAN
+   endpoint (an IPv4 address or name, no spaces) and `PORT` its TCP port in decimal. It ignores
+   anything else (other versions, uppercase hex, more than 128 bytes).
+4. The relay takes the first reply whose `NONCE` is its own. With none in 10 s it asks for the
+   address (port 7443 assumed). The same nonce goes into `pair` below.
+
+### Exchange
+
+1. The relay connects over TLS 1.2+ **without** a pin or chain check and records `F`: the 32 raw
+   bytes of SHA-256 over the leaf certificate's DER (the same digest that `sha256=` pins, as
+   bytes rather than hex).
+2. It sends `pair 1 NONCE NAME\n` instead of `hello`. `NAME` is 1–32 characters of
+   `[A-Za-z0-9._-]` (`Q2`, `M1`); the line is at most 256 bytes. It sends nothing more.
+3. Both sides compute the code:
+
+   ```text
+   H    = SHA-256( "soloify-pair-1" || F || N )   14 ASCII bytes, no NUL; 32 bytes; 16 bytes
+   code = (H[0]<<24 | H[1]<<16 | H[2]<<8 | H[3]) mod 1000000
+   ```
+
+   where `N` is the nonce's 16 raw bytes (hex-decoded), and `H[0..3]` is read as a big-endian
+   unsigned 32-bit integer. The code is shown as six digits, zero-padded, in two groups of three:
+   `060 893`. (Six digits hold just under 20 bits; reducing 32 bits keeps the bias below 2^-12.)
+
+   Test vector: `F` = bytes `00 01 … 1f`, `N` = bytes `00 01 … 0f`;
+   `H` = `d46f40dde69898fb076113259ebeae9eccb045edc58f5f768d2756e1608fd3e0`;
+   `0xd46f40dd` = 3564060893; code 60893, shown `060 893`.
+4. The device shows the code; the user types it into `soloify pair-device`. The bridge holds the
+   connection meanwhile and compares the typed six digits with its own in constant time.
+5. The bridge answers exactly one of, then closes:
+   - On a match: `remote 1 N\n` followed by `N` lines (1 or 2), each ending `\n`, in the
+     `remote` format `HOST PORT TOKEN sha256=PIN`: the LAN endpoint first, then the WAN endpoint
+     from setup's away step when there is one. Both carry the same token, and `PIN` is `F` in hex,
+     which the relay must check equals the `F` it recorded. The relay writes them to
+     `.soloify/remote` (temp file, then rename).
+   - Otherwise: `denied REASON\n`. Relays must treat any line that is `denied` or starts with
+     `denied ` as a refusal; the reason is advisory: `idle` (no pair-device waiting), `address`
+     (not a private source), `rate`, `malformed`, `code` (wrong code typed), `timeout` (3 minutes
+     without a code), `replaced` (a newer `pair` took its place), `cancelled` (pair-device quit),
+     `gone`. A bridge without pairing closes the connection without a line.
+
+The relay should wait at least 190 s for the answer. A wrong code ends that request: a new
+attempt needs a new connection and nonce, and so a new code.
+
+### Bridge rules
+
+- One pending request; a newer `pair` answers the older one `denied replaced`.
+- Refused unless a `soloify pair-device` is waiting, and always from a source outside
+  10/8, 172.16/12, 192.168/16, 169.254/16, 127/8, fc00::/7, fe80::/10 or ::1 (IPv4-mapped
+  addresses are unwrapped). Carrier-grade NAT (100.64/10) counts as outside. Behind Docker
+  Desktop's port publishing every source looks private; the waiting pair-device and the code
+  still hold.
+- At most 5 `pair` lines from private sources a minute (rolling); more get `denied rate`.
+- The existing token is delivered, never rotated. `soloify remote --rotate` revokes it.
+- One pairing per wait: after a success, the next needs `soloify pair-device` again.
+
+### Admin socket (local)
+
+`DATA/pair.sock`, a unix socket of mode 0600, carries JSON lines between the bridge and
+`soloify pair-device`. The client sends
+`{"op": "wait", "endpoints": {"lan": H, "port": P, "wan": H|null, "wan_port": P|null}}`; the
+bridge answers `{"event": "waiting", "pin": …}` or `{"event": "busy"}` (another is waiting).
+It then sends `{"event": "request", "id", "name", "peer"}`, `{"event": "ended", "id",
+"reason"}` and finally `{"event": "paired", "id", "name", "lan", "port", "wan", "wan_port"}`;
+the client sends `{"op": "code", "id", "code": "123456"}`. Closing the client cancels a pending
+request.
