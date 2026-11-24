@@ -86,6 +86,13 @@ async def serve(args: argparse.Namespace) -> int:
 
 def remote(args: argparse.Namespace) -> int:
     identity = server.Identity.load(args.data)
+    if args.rotate:
+        identity.rotate()
+        print(
+            "New token: devices with the old one are refused from their next connection. "
+            "Copy them these lines.",
+            file=sys.stderr,
+        )
     lines = server.remote_lines(identity, args.lan or [server.lan_address()], args.port)
     lines += server.remote_lines(identity, args.wan or [], args.wan_port or args.port)
     print("\n".join(lines))
@@ -132,6 +139,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--wan", action="append", help="name or address from outside, tried next")
     p.add_argument("--port", type=tcp_port, default=PORT)
     p.add_argument("--wan-port", type=tcp_port, help="external TCP port (default: --port)")
+    p.add_argument(
+        "--rotate", action="store_true", help="replace the token first, revoking every device"
+    )
     p = sub.add_parser("setup", help="guided bridge setup and card export")
     p.add_argument("--check", action="store_true", help="read-only prerequisite report")
     p.add_argument(

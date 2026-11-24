@@ -39,11 +39,22 @@ class Identity:
     def __init__(self, folder: Path):
         self.cert = folder / "cert.pem"
         self.key = folder / "key.pem"
-        self.token = (folder / "token").read_text().strip()
+        self.token_file = folder / "token"
+        self.token  # noqa: B018 - a missing token fails here, as it always has
         der = x509.load_pem_x509_certificate(self.cert.read_bytes()).public_bytes(
             serialization.Encoding.DER
         )
         self.pin = hashlib.sha256(der).hexdigest()
+
+    @property
+    def token(self) -> str:
+        """Read at each use, so `soloify remote --rotate` revokes the old one without a restart."""
+        return self.token_file.read_text().strip()
+
+    def rotate(self) -> str:
+        """A new token: every paired device must pair again (or get a new `remote`)."""
+        _private(self.token_file, secrets.token_hex(16).encode() + b"\n")
+        return self.token
 
     @classmethod
     def load(cls, data: Path) -> "Identity":
