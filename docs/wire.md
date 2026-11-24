@@ -8,6 +8,8 @@ Version 2: audio, presentation anchors, immediate pause/rewind, state, covers, c
 2. The relay sends `hello 2 TOKEN\n`. The bridge compares the token in constant time and answers `ok 2\n`, or closes the connection. A second relay that says hello replaces the first, whose link may be dead without either side knowing yet.
 3. After that both sides send frames: a type byte, a big-endian u32 payload length (at most 1 MiB), then the payload.
 
+A first line `pair 1 NONCE NAME\n` in place of `hello` starts [pairing](#pairing-pair-version-1), which has its own version.
+
 A check that the bridge answers, without taking it from the relay that has it (the Soloify app's Status), sends `ping 2 TOKEN\n` in place of `hello`. The bridge compares the token as for `hello`, answers `pong 2\n` and closes; the current relay's session is left alone. A wrong token gets the connection closed without a line, and so does `ping` at a bridge older than it: a checker that gets no `pong` after a good handshake may fall back on `hello`, which does take the bridge, only when no relay of its own is playing.
 
 ## Frames
@@ -202,8 +204,9 @@ All text below is ASCII; `\n` is a single LF byte; hex is lowercase.
    and port: `SOLOIFY-HERE 1 NONCE HOST PORT`, no newline, where `HOST` is the bridge's LAN
    endpoint (an IPv4 address or name, no spaces) and `PORT` its TCP port in decimal. It ignores
    anything else (other versions, uppercase hex, more than 128 bytes).
-4. The relay takes the first reply whose `NONCE` is its own. With none in 10 s it asks for the
-   address (port 7443 assumed). The same nonce goes into `pair` below.
+4. The relay takes the first reply whose `NONCE` is its own. With none in 10 s the Soloify app's
+   Pair with server asks for the address (port 7443 assumed); a relay with no `remote` has no
+   field to ask in, and says no server answered. The same nonce goes into `pair` below.
 
 ### Exchange
 
@@ -211,7 +214,8 @@ All text below is ASCII; `\n` is a single LF byte; hex is lowercase.
    bytes of SHA-256 over the leaf certificate's DER (the same digest that `sha256=` pins, as
    bytes rather than hex).
 2. It sends `pair 1 NONCE NAME\n` instead of `hello`. `NAME` is 1–32 characters of
-   `[A-Za-z0-9._-]` (`Q2`, `M1`); the line is at most 256 bytes. It sends nothing more.
+   `[A-Za-z0-9._-]` (`Q2`, `M1`); the line is at most 256 bytes. It sends nothing more. A line
+   that doesn't parse, such as another version, gets `denied malformed`.
 3. Both sides compute the code:
 
    ```text
@@ -263,5 +267,6 @@ attempt needs a new connection and nonce, and so a new code.
 bridge answers `{"event": "waiting", "pin": …}` or `{"event": "busy"}` (another is waiting).
 It then sends `{"event": "request", "id", "name", "peer"}`, `{"event": "ended", "id",
 "reason"}` and finally `{"event": "paired", "id", "name", "lan", "port", "wan", "wan_port"}`;
-the client sends `{"op": "code", "id", "code": "123456"}`. Closing the client cancels a pending
-request.
+the client sends `{"op": "code", "id", "code": "123456"}`, answered by `paired` or `ended` (reason
+`code`), or by `{"event": "stale", "id"}` when no request with that ID is pending. Closing the
+client cancels a pending request.
