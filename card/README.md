@@ -1,21 +1,23 @@
 # The card's files
 
-The [guided setup](../README.md#guided-setup) exports this folder for the device's card.
-The matching maintainer card ZIP includes the MIPS relay, `run`, `aplay.sh`, and release
-version metadata. Setup adds a private `remote`; releases contain no credentials or
-user settings. Firmware must include Q2-Pod's **Streaming → Soloify** row from the
-`step5-soloify` integration, with protocol v2. Firmware installation is separate.
-Existing installations, including future Apps installations, can export only `remote`.
-The manual [M1 runbook](../docs/step4-runbook.md) remains available for development.
+The [guided setup](../README.md#guided-setup) pairs the device by code, or exports this folder
+for its card. The matching maintainer card ZIP includes the MIPS relay, `run`, `aplay.sh`,
+`q2app` and release version metadata. A device gets `remote` by pairing or from setup's export;
+releases contain no credentials or user settings. Upstream Q2 Pod (1.9.1 or later) on the Q2
+installs the ZIP from its App Store ([README](../README.md#install-from-the-app-store)). The M1 Plus's firmware must include Q2-Pod's **Streaming → Soloify** row from the `step5-soloify` integration,
+with protocol v2; firmware installation is separate. Existing installations can export only
+`remote`. The manual [M1 runbook](../docs/step4-runbook.md) remains available for development.
 
 | File | What |
 | --- | --- |
 | `q2-soloify` | the relay, from `relay/build.py --rootfs …` (one binary for the Q2 and the M1 Plus) |
 | `run` | backgrounds itself, owns `/tmp/q2-librespot`, starts the relay with `-q`, and restarts it with 5–60 s backoff; logs to `spot.log`. In `.soloify` on a Q2 it runs the manager instead (below). On the M1 Plus it deletes `.soloify/q2app`, so the firmware lists no second Soloify row |
+| `q2app` | `name=Soloify`, `row=library`: upstream Q2 Pod lists the folder as an app in Library → Apps, which starts `run`. On the M1 Plus, `run` deletes it |
 | `aplay.sh` | the sink, unchanged from q2-librespot's `.spotify/aplay.sh`, so `SPOT_OUT` and Q2 Pod's Bluetooth and USB output work alike |
-| `remote` | written by pairing with a code (`soloify pair-device` on the bridge's machine, the code shown by the manager's Pair with server or, with no `remote`, by the relay's page as its error), or made by guided setup or `soloify remote` and copied here; `remote.sample` explains it. Never in the ZIP, so updates keep it |
-| `away` | `verified <unix time> <host>` lines: the relay's first connection through each WAN line (any `remote` line after the first). A pairing with another WAN host removes it. WAN failures in a row, with no LAN success between them, are counted in `/tmp/q2-soloify.away` |
-| `.delay`, `.quality` | the firmware's Soloify Delay (milliseconds) and Quality (96, 128 or 160 kbit/s) settings, one integer each. The relay reads them at each connection: `-b` beats `.delay`, which beats the endpoint's `buffer=`; with neither, 1 s on the LAN and 4 s beyond it. `.quality` goes to the bridge in the `A 1` request, and without it the bridge's `--bitrate` applies. Never in the ZIP, so updates and Remove keep them |
+| `remote` | written by pairing with a code (`soloify pair-device` on the bridge's machine, the code shown by the manager's Pair with server or, with no `remote`, by the relay's page as its error), or made by guided setup or `soloify remote` and copied here; `remote.sample` explains it. Never in the ZIP, so updates keep it; the App Store's Remove on upstream deletes it with the folder, and the M1 Plus's firmware keeps it |
+| `away` | `verified <unix time> <host>` lines: the relay's first connection through each WAN line (any `remote` line after the first). A pairing with another WAN host removes it, and Remove on upstream deletes it with the folder. WAN failures in a row, with no LAN success between them, are counted in `/tmp/q2-soloify.away` |
+| `.delay`, `.quality` | the firmware's Soloify Delay (milliseconds) and Quality (96, 128 or 160 kbit/s) settings, one integer each. The relay reads them at each connection: `-b` beats `.delay`, which beats the endpoint's `buffer=`; with neither, 1 s on the LAN and 4 s beyond it. `.quality` goes to the bridge in the `A 1` request, and without it the bridge's `--bitrate` applies. Never in the ZIP, so updates keep them; Remove on upstream deletes them with the folder, and the M1 Plus's firmware keeps them |
+| `backup/` | the swap's copy of Spotify's `librespot`, `run` and `aplay.sh`, a `SOURCE` line and `relay.sha256` (below). Never in the ZIP; Remove on upstream deletes it |
 | `log.sh` | step 1's measurements: battery, Wi-Fi bytes, load, the relay's CPU and memory, into `load.log` |
 
 On a Q2 with upstream Q2 Pod, `q2app` lists Soloify in Library → Apps, and its `run` starts
