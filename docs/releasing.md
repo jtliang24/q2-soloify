@@ -1,9 +1,9 @@
 # Matching release artifacts
 
 A maintainer builds the MIPS relay using the compatible stock rootfs (never bundled),
-then prepares the only release ZIP: `.soloify/q2-soloify`, `run`, `aplay.sh`, `VERSION`.
-It contains no `remote`, Soloist, user settings, session or credentials. Runtime card
-export adds a private `remote` for each installation.
+then prepares the only release ZIP: `.soloify/q2-soloify`, `run`, `aplay.sh`, `q2app`, `VERSION`.
+It contains no `remote`, `.delay`, `.quality`, `backup/`, Soloist, user settings, session or
+credentials. Runtime card export adds a private `remote` for each installation.
 
 ```sh
 nix develop
@@ -33,6 +33,37 @@ Linux amd64/arm64/armv7 image tagged `VERSION`, uploads matching files and check
 then publishes the release after an anonymous image pull succeeds. Treat version
 tags as immutable; do not reuse them for changed images. Source archives generated
 by GitHub are separate from release assets.
+
+### Card ZIP contract (upstream Q2 Pod's App Store)
+
+A Q2 on upstream Q2 Pod 1.9.1 or later installs Soloify from a `.q2/custom-sources.list`
+line, `jtliang24/q2-soloify Soloify`. Its App Store takes the **first asset ending in
+`.zip`** of the latest release and unpacks only entries under `.soloify/`. So:
+
+- The release has exactly one `.zip` asset, the card ZIP; every entry is a regular file under
+  `.soloify/` (no links, `._*` or `__MACOSX`).
+- `.soloify/q2-soloify` and `.soloify/q2app` are present; without `q2app` the firmware does not
+  list the app. `q2app` is `name=Soloify` and `row=library`.
+- `remote`, `.delay`, `.quality` and `backup/` are never in the ZIP: an App Store Update
+  replaces only the ZIP's files, so these survive it. (Remove deletes the whole `.soloify`.)
+- Tags stay plain `vX.Y.Z`: URL-safe and short. The App Store compares the redirect's tag from
+  `github.com/<repo>/releases/latest` with the installed tag as strings, so it must equal the
+  release's `tag_name`.
+
+`tests/test_release.py` pins this contract.
+
+### Latest and prerelease
+
+Only a release that is neither a prerelease nor a draft is **Latest**, and only Latest
+reaches the App Store (`releases/latest` skips the others).
+
+- Walkthrough releases stay prereleases, so Q2s that already installed Soloify keep the
+  previous Latest and new installs get it too.
+- A release becomes Latest only after the App Store device pass (install, pair, swap, update,
+  remove on a Q2) has passed on it. An unchanged prerelease can be promoted without rebuilding.
+- Current state: `v0.0.1` is Latest. It predates `q2app`, so the App Store would install it but
+  upstream would not list it. `v0.0.2` is the first release with the contract above and should
+  be published as a prerelease until the device pass.
 
 ### Public container access
 
