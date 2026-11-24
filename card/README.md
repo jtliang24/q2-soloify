@@ -23,7 +23,7 @@ holds, whether `remote` is there, whether the bridge answers), Delay and Quality
 `.delay` and `.quality` here, and in `.spotify` too while that runs the relay, and ends itself
 after 2 minutes unused. `run` tells the devices apart by `/sys/class/graphics/fb0/virtual_size`
 (the Q2's 320 × 375 framebuffer, two pages: `320,750`; the M1 Plus's `320,960`) and the M1 Plus's
-`Goodix-CTP` touchscreen in `/proc/bus/input/devices`; a device it can't tell runs the relay.
+`Goodix-CTP` touchscreen in `/proc/bus/input/devices`; a device that is neither is taken for a Q2.
 
 Compatible firmware calls `run` from the Soloify row. To run the launcher by hand on a development device:
 

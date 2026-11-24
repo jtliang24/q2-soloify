@@ -112,12 +112,13 @@ async def test_launcher_keeps_an_existing_backend(tmp_path):
 
 def device(root: Path, kind: str | None):
     """A fake /sys and /proc for card/run: the Q2's 320 x 375 framebuffer, two pages, or the M1
-    Plus's 320 x 480 with its Goodix touchscreen."""
+    Plus's 320 x 480 with its Goodix touchscreen; "other" a framebuffer neither has, None none."""
     if kind is None:
         return
     fb = root / "sys/class/graphics/fb0"
     fb.mkdir(parents=True)
-    (fb / "virtual_size").write_text("320,750\n" if kind == "q2" else "320,960\n")
+    size = {"q2": "320,750", "m1plus": "320,960"}.get(kind, "240,320")
+    (fb / "virtual_size").write_text(size + "\n")
     (root / "proc/bus/input").mkdir(parents=True)
     names = ["axp2101-pek", "md-gpio-keys"] + (["Goodix-CTP"] if kind == "m1plus" else [])
     (root / "proc/bus/input/devices").write_text(
@@ -155,9 +156,10 @@ def launcher(tmp_path, short):
     return soloify, env, short / "m", short / "r"
 
 
-async def test_run_starts_the_manager_on_a_q2(tmp_path, launcher):
+@pytest.mark.parametrize("kind", ["q2", "other", None])  # a device neither fits is taken for a Q2
+async def test_run_starts_the_manager_on_a_q2(tmp_path, launcher, kind):
     soloify, env, manage, relay = launcher
-    device(tmp_path / "dev", "q2")
+    device(tmp_path / "dev", kind)
     try:
         await launch_now(soloify, env)
         await until(lambda: Path(f"{manage}.browse.sock").exists())
@@ -200,16 +202,15 @@ async def test_run_manager_idle_end_and_term(tmp_path, launcher):
         await end(manage)
 
 
-@pytest.mark.parametrize("kind", ["m1plus", None])
-async def test_run_keeps_the_relay_off_a_q2(tmp_path, launcher, kind):
+async def test_run_keeps_the_relay_off_a_q2(tmp_path, launcher):
     soloify, env, manage, relay = launcher
-    device(tmp_path / "dev", kind)
+    device(tmp_path / "dev", "m1plus")
     try:
         await launch_now(soloify, env)
         await until(lambda: Path(f"{relay}.sock").exists())  # the relay's control socket: -q
         assert not manage.exists()
         # The M1 Plus's firmware would list q2app as a second Soloify row: run removes it there
-        assert (soloify / "q2app").exists() == (kind is None)
+        assert not (soloify / "q2app").exists()
     finally:
         await end(relay)
 

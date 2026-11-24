@@ -3,14 +3,16 @@
 cd "$(dirname "$0")" || exit 1
 # The device, from the hardware, which no firmware changes: /dev/fb0 is 320 x 375 on the Q2 and
 # 320 x 480 on the M1 Plus (two pages each, so a virtual height of 750 or 960), and only the M1
-# Plus has the Goodix touchscreen. q2, m1plus, or nothing when neither fits. SOLOIFY_ROOT: tests.
+# Plus has the Goodix touchscreen. m1plus when either says so, else q2: a device neither fits is
+# taken for a Q2, upstream Q2 Pod's own. SOLOIFY_ROOT: tests.
 device() {
     root=${SOLOIFY_ROOT:-}
     if grep -q Goodix-CTP "$root/proc/bus/input/devices" 2>/dev/null; then echo m1plus; return; fi
-    read -r size 2>/dev/null < "$root/sys/class/graphics/fb0/virtual_size" || return
+    size=
+    read -r size 2>/dev/null < "$root/sys/class/graphics/fb0/virtual_size"
     h=${size#320,}
-    case $h in '' | *[!0-9]*) return ;; esac
-    if [ $((h % 480)) -eq 0 ]; then echo m1plus; elif [ $((h % 375)) -eq 0 ]; then echo q2; fi
+    case $h in '' | *[!0-9]*) echo q2; return ;; esac
+    if [ "$h" -gt 0 ] && [ $((h % 480)) -eq 0 ]; then echo m1plus; else echo q2; fi
 }
 # Which loop. The relay, at the base Spotify's page reads, everywhere but in .soloify on a Q2: in
 # .spotify (the swap's copy), and in .soloify on the M1 Plus, whose firmware has its own Soloify row.
