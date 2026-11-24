@@ -25,6 +25,22 @@ after 2 minutes unused. `run` tells the devices apart by `/sys/class/graphics/fb
 (the Q2's 320 × 375 framebuffer, two pages: `320,750`; the M1 Plus's `320,960`) and the M1 Plus's
 `Goodix-CTP` touchscreen in `/proc/bus/input/devices`; a device that is neither is taken for a Q2.
 
+The manager's swap rows put the relay in the Spotify slot's place (upstream Q2 Pod on the Q2
+only). **Use Soloify for Spotify** stops Spotify (a TERM to the pid in `/tmp/q2-librespot`, then
+any `librespot` left; Spotify running as root, before Q2 Pod 1.9.1, needs **Stop Streaming
+Services** first), backs up `.spotify/{librespot,run,aplay.sh}` once into `.soloify/backup/`
+with a `SOURCE` line (librespot's size and SHA-256), copies `aplay.sh`, `run`, `remote`, `.delay`
+and `.quality` into `.spotify`, then the relay as `.spotify/librespot` last, and records its hash
+in `backup/relay.sha256`. Every copy is written aside, synced and renamed, so a cut copy leaves
+`*.tmp` files and the old binary, and trying again mends it. `.spotify/cache` and `.cache-size`
+are never touched, and a relay never replaces a backup of real librespot. **Update Spotify's
+copy** shows when the slot runs an older relay, **Repair** when the App Store's Spotify Update
+put librespot back over the swap (that librespot becomes the backup), and **Restore Spotify**
+while the relay is in place: it copies the backup back (librespot last) and deletes `.spotify`'s
+`remote`, `.delay` and `.quality`; `backup/` stays. Without a backup it removes only Soloify's
+files and says to install Spotify from the App Store. The App Store's Remove of Soloify deletes
+`.soloify`, `backup/` included, but not `.spotify`: Restore first.
+
 Compatible firmware calls `run` from the Soloify row. To run the launcher by hand on a development device:
 
 ```sh
