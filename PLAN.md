@@ -12,7 +12,7 @@ This plan turns that design into **Soloify**, an app installed from System setti
 
 - **Its own app, on the shared Spotify page.** Downloads can't match librespot: Soloist has no offline API, and recording its stream would be ripping. So Soloify isn't a drop-in for `.spotify/`. It gets its own card folder `.soloify/`, its own Streaming row and its own Apps row, and coexists with Spotify. Only one backend runs at a time. Both rows open `patch/spotify.c`'s page, with the backend picked by the row.
 - **Apps row:** on the M1 behind an M1 seam in q2-pod's fork now, then an upstream PR for the Q2 (Q2 users unzip by hand until it merges).
-- **Pairing:** for the PoC, copy a file (`.soloify/remote`). A LAN pairing code comes later.
+- **Pairing:** for the PoC, copy a file (`.soloify/remote`). The LAN pairing code that followed is in [docs/wire.md](docs/wire.md#pairing-pair-version-1) (step 10).
 - **TLS:** pin the bridge's self-signed certificate by SHA-256 by default; check against the device's CA bundle (`/etc/scrobble-ca.pem`) when the bridge has a real name (Let's Encrypt, Tailscale Funnel).
 - **Code lives in this repo, `q2-soloify`**: relay, bridge, container, card ZIP. Only the firmware seams and docs go in q2-pod.
 - **Android:** written up below; an optional, time-boxed spike after the PoC works.
@@ -133,7 +133,7 @@ Test and commit after each item. One device flash with a checklist at the end: s
 7. **Cross-platform runs:** NixOS native and Podman, macOS Docker, Windows x86 and ARM Docker, each playing to the M1 for 10 min with skip, seek and pause.
 8. **Device pass on the M1** (one dev flash): the Apps row installs, updates and removes; the Streaming row; the full Spotify-page checklist with the Soloify backend; switching Spotify ⇄ Soloify; hidden rows; Bluetooth not applicable (Wi-Fi). Restore settings, then plan any fixes separately.
 9. **Upstream PR** (Q2): the seams without guards, plus `caps`, offered to DiamondBond/q2-pod. A Q2 device check if one is available.
-10. **Later:** the LAN pairing code (relay broadcast, code shown through the page's error message, confirmed on the server); the Android spike; a Pi deployment.
+10. **Later:** the Android spike; a Pi deployment. The LAN pairing code (relay broadcast, code shown through the page's error message, confirmed on the server) is done: see [docs/wire.md](docs/wire.md#pairing-pair-version-1) and the README's [pairing by code](README.md#pairing-the-device-by-code).
 
 ## Verification (end to end)
 
