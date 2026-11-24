@@ -8,6 +8,8 @@ Version 2: audio, presentation anchors, immediate pause/rewind, state, covers, c
 2. The relay sends `hello 2 TOKEN\n`. The bridge compares the token in constant time and answers `ok 2\n`, or closes the connection. A second relay that says hello replaces the first, whose link may be dead without either side knowing yet.
 3. After that both sides send frames: a type byte, a big-endian u32 payload length (at most 1 MiB), then the payload.
 
+A check that the bridge answers, without taking it from the relay that has it (the Soloify app's Status), sends `ping 2 TOKEN\n` in place of `hello`. The bridge compares the token as for `hello`, answers `pong 2\n` and closes; the current relay's session is left alone. A wrong token gets the connection closed without a line, and so does `ping` at a bridge older than it: a checker that gets no `pong` after a good handshake may fall back on `hello`, which does take the bridge, only when no relay of its own is playing.
+
 ## Frames
 
 | Type | Direction | Payload |

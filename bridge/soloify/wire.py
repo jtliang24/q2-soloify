@@ -7,6 +7,8 @@ import struct
 
 VERSION = 2
 OK = b"ok %d\n" % VERSION
+# The answer to `ping`: the token is good, and nothing else changes
+PONG = b"pong %d\n" % VERSION
 # The largest frame either side accepts: a cover JPEG is the biggest
 MAX_FRAME = 1 << 20
 HELLO_MAX = 256
@@ -52,12 +54,13 @@ async def read_frame(reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
     return kind, await reader.readexactly(size)
 
 
-def hello_ok(line: bytes, token: str) -> bool:
-    """Whether the relay's first line is `hello 2 TOKEN` with our token, in constant time."""
+def hello_ok(line: bytes, token: str, word: bytes = b"hello") -> bool:
+    """Whether the relay's first line is `hello 2 TOKEN` with our token, in constant time (or
+    `ping 2 TOKEN`, with word b"ping")."""
     parts = line.rstrip(b"\n").split(b" ")
     return (
         len(parts) == 3
-        and parts[0] == b"hello"
+        and parts[0] == word
         and parts[1] == b"%d" % VERSION
         and hmac.compare_digest(parts[2], token.encode())
     )

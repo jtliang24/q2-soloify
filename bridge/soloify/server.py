@@ -119,6 +119,12 @@ class Server:
             if self.pairing and line.startswith(b"pair ") and len(line) <= wire.HELLO_MAX:
                 await self.pairing.relay(line, peer[0], reader, writer)
                 return
+            if len(line) <= wire.HELLO_MAX and wire.hello_ok(line, self.identity.token, b"ping"):
+                # A reachability check (the Soloify app's Status): the current relay keeps its
+                # session, as it would lose it to a hello
+                writer.write(wire.PONG)
+                await writer.drain()
+                return
             if len(line) > wire.HELLO_MAX or not wire.hello_ok(line, self.identity.token):
                 log.warning("relay %s: bad hello", peer)
                 return

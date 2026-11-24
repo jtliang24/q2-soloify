@@ -109,3 +109,30 @@ async def test_new_relay_replaces_the_old(tmp_path):
         assert await asyncio.wait_for(old_r.read(), 5) == b""
         old_w.close()
         new_w.close()
+
+
+async def test_ping_answers_without_taking_the_session(tmp_path):
+    got = asyncio.Queue()
+
+    async def session(reader, writer):
+        await got.put("started")
+        await reader.read()
+
+    identity, listener, port = await _start(tmp_path, session)
+    async with listener:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=_client())
+        writer.write(b"hello 2 %s\n" % identity.token.encode())
+        assert await reader.readline() == wire.OK
+        assert await asyncio.wait_for(got.get(), 5) == "started"
+        for token, answer in ((identity.token, [wire.PONG]), ("wrong", [])):
+            r, w = await asyncio.open_connection("127.0.0.1", port, ssl=_client())
+            w.write(b"ping 2 %s\n" % token.encode())
+            lines = []
+            while line := await asyncio.wait_for(r.readline(), 5):
+                lines.append(line)
+            assert lines == answer
+            w.close()
+        # The relay's session goes on: no replacement, no new session
+        await asyncio.sleep(0.2)
+        assert got.empty() and not reader.at_eof()
+        writer.close()
