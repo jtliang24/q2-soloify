@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from relay_rig import ROOT, Bridge, relay_binary, until
+from soloify import wire
 from test_browse import decode, request
 from test_contract import browse
 
@@ -101,7 +102,7 @@ async def test_status_delay_and_quality_without_remote(tmp_path, manager):
     assert "bridge" not in rows  # nothing to check without a remote
     assert rows["delay"][:4] == ["list", "delay", "Delay", "Automatic"]
     assert rows["quality"][:4] == ["list", "quality", "Quality", "160 kbit/s"]
-    assert list(rows) == ["slot", "paired", "use", "delay", "quality"]  # use: test_swap
+    assert list(rows) == ["slot", "paired", "pair", "use", "delay", "quality"]  # use: test_swap
 
 
 async def test_spotify_slot_by_content(tmp_path, manager):
@@ -166,7 +167,16 @@ async def test_choices_write_soloify_and_our_slot(tmp_path, manager, ours):
     assert (await m.ask("nonsense"))[0][1] == "bad"
 
 
-async def test_bridge_check_is_cached(tmp_path, manager):
+async def test_bridge_check_is_cached(tmp_path, manager, monkeypatch):
+    pings = []
+    hello_ok = wire.hello_ok
+
+    def counted(line, token, word=b"hello"):
+        if word == b"ping":
+            pings.append(line)
+        return hello_ok(line, token, word)
+
+    monkeypatch.setattr(wire, "hello_ok", counted)
     bridge = await Bridge(tmp_path / "data").start()
     try:
         soloify = make_card(tmp_path, relay_binary())
@@ -185,9 +195,9 @@ async def test_bridge_check_is_cached(tmp_path, manager):
 
         rows = await asyncio.wait_for(settled(), 15)
         assert rows["bridge"][3] == "Reachable (LAN)"
-        assert len(bridge.sessions) == 1
+        assert len(pings) == 1 and not bridge.sessions  # a ping, no session taken
         await asyncio.sleep(0.5)
-        assert (await m.menu())[0][2] == "" and len(bridge.sessions) == 1  # cached
+        assert (await m.menu())[0][2] == "" and len(pings) == 1  # cached
     finally:
         await bridge.stop()
 
@@ -210,7 +220,7 @@ async def test_bridge_not_reached(tmp_path, manager):
 
 
 async def test_bridge_left_to_our_running_relay(tmp_path, manager, short):
-    # Our relay in the Spotify slot holds the bridge: a hello would replace it
+    # Our relay in the Spotify slot holds the bridge: a hello would replace it, a ping does not
     soloify = make_card(tmp_path, relay_binary(), slot=relay_binary().read_bytes())
     bridge = await Bridge(tmp_path / "data").start()
     holder = await asyncio.create_subprocess_exec("sleep", "30")
@@ -218,7 +228,7 @@ async def test_bridge_left_to_our_running_relay(tmp_path, manager, short):
         (soloify / "remote").write_text(bridge.line() + "\n")
         (short / "slot").write_text(f"{holder.pid}\n")
         m = await manager(soloify)
-        assert await asyncio.wait_for(bridge_word(m), 15) == "In use by Soloify"
+        assert await asyncio.wait_for(bridge_word(m), 15) == "Reachable (LAN)"
         assert not bridge.sessions
     finally:
         holder.kill()

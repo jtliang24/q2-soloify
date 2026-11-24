@@ -176,3 +176,43 @@ async def test_device_build_swaps_the_spotify_slot(tmp_path, device):
             if leftover.returncode is None:
                 leftover.kill()
                 await leftover.wait()
+
+
+async def test_device_build_pairs_by_code(tmp_path, device, monkeypatch):
+    """Discovery, the unchecked TLS link's certificate hash, the code and the stored remote, with
+    the device's OpenSSL 1.1.1f and glibc (the broadcast goes to loopback)."""
+    import tempfile
+
+    from soloify import pairing
+    from test_manage import Manager, make_card
+    from test_relay_pairing import Device, PairingBridge, free_udp_port, pair_level
+
+    exe, rootfs = device
+    udp = free_udp_port()
+    monkeypatch.setenv("SOLOIFY_PAIR_UDP_PORT", str(udp))
+    nonces = []
+    parse = pairing.parse_pair
+    monkeypatch.setattr(pairing, "parse_pair", lambda line: nonces.append(line) or parse(line))
+    bridge = await PairingBridge(tmp_path / "data").start()
+    pair_device = Device(bridge, udp)
+    soloify = make_card(tmp_path / "card", exe)
+    with tempfile.TemporaryDirectory(prefix="sf-") as folder:
+        m = Manager(soloify, Path(folder) / "m", ["qemu-mipsel", "-L", str(rootfs), str(exe)])
+        try:
+            await pair_device.waiting(bridge)
+            await m.start()
+            await m.ask("pair")
+            rows = (await pair_level(m, "Enter ", timeout=30))[1]
+            code = rows[0][2].removeprefix("Enter ")
+            nonce = bytes.fromhex(nonces[-1].split()[2].decode())
+            assert code == pairing.shown(pairing.code(bridge.identity.fingerprint, nonce))
+            pair_device.type(code)
+            await pair_level(m, "Paired", timeout=30)
+            lines = pairing.Endpoints("127.0.0.1", bridge.port).lines(
+                bridge.identity.token, bridge.identity.pin
+            )
+            assert (soloify / "remote").read_text() == "".join(f"{line}\n" for line in lines)
+        finally:
+            pair_device.stop()
+            await m.stop()
+            await bridge.stop()
