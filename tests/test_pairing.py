@@ -458,4 +458,3 @@ def test_discovery_answers_by_unicast(tmp_path):
         assert not pairing.Discovery(
             LAN, 7443, bind="127.0.0.1", udp_port=listener.bound[1]
         ).start()
-
