@@ -145,3 +145,34 @@ async def test_device_build_serves_the_manager_page(tmp_path, device):
         finally:
             await m.stop()
             await bridge.stop()
+
+
+async def test_device_build_swaps_the_spotify_slot(tmp_path, device):
+    import tempfile
+
+    from test_manage import Manager
+    from test_swap import LEFTOVER, NAME, STOCK, ask, card
+
+    exe, rootfs = device
+    soloify, slot = card(tmp_path / "card", exe)
+    leftover = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", LEFTOVER, stdout=asyncio.subprocess.PIPE
+    )
+    await leftover.stdout.readline()
+    with tempfile.TemporaryDirectory(prefix="sf-") as folder:
+        qemu = ["qemu-mipsel", "-L", str(rootfs), str(exe)]
+        m = Manager(soloify, Path(folder) / "m", qemu, SOLOIFY_LIBRESPOT=NAME)
+        await m.start()
+        try:
+            assert "use" in (await m.menu())[1]
+            assert (await ask(m, "use"))[0][1:3] == ["ok", "Spotify now plays through Soloify"]
+            assert (slot / "librespot").read_bytes() == exe.read_bytes()
+            assert await asyncio.wait_for(leftover.wait(), 1) != 0  # found by o32's readdir
+            assert (soloify / "backup/librespot").read_bytes() == STOCK
+            assert (await ask(m, "restore"))[0][1] == "ok"
+            assert (slot / "librespot").read_bytes() == STOCK
+        finally:
+            await m.stop()
+            if leftover.returncode is None:
+                leftover.kill()
+                await leftover.wait()
