@@ -33,7 +33,7 @@ static int word(char **s, char *out, int cap) {
     return n;
 }
 
-static int parse(char *line, struct endpoint *ep) {
+int remote_parse(char *line, struct endpoint *ep) {
     char opt[96];
     int n;
     memset(ep, 0, sizeof *ep);
@@ -75,7 +75,7 @@ int remote_load(const char *path, struct endpoint *eps, int max) {
         if (len && line[len - 1] == '\r') line[len - 1] = 0;
         while (*line == ' ' || *line == '\t') ++line;
         if (!*line || *line == '#') continue;
-        if (parse(line, &eps[count]) < 0) say("remote: line %d unreadable, skipped", no);
+        if (remote_parse(line, &eps[count]) < 0) say("remote: line %d unreadable, skipped", no);
         else ++count;
     }
     return count;

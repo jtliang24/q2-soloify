@@ -27,6 +27,8 @@ if [ "${PWD##*/}" = .soloify ]; then
         # The M1 Plus's firmware lists any folder with a q2app as a card app: a second Soloify row,
         # beside its own. The manager is the Q2's, so the file goes.
         rm -f ./q2app
+        # The name a pairing gives the server (the relay's default is Q2)
+        export SOLOIFY_NAME=M1
         ;;
     q2)
         if [ -z "${SOLOIFY_Q2POD:-}" ]; then

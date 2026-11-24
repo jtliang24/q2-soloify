@@ -1,7 +1,8 @@
 /* The link to the bridge: a non-blocking TCP connection with a short timeout, then TLS through the
  * rootfs's OpenSSL 1.1.1f. With a pin, only the bridge's own certificate is accepted and nothing
  * else is checked, so the device's clock doesn't matter. Without one, the chain is checked against
- * Q2 Pod's CA bundle and the name against the host. */
+ * Q2 Pod's CA bundle and the name against the host. Pairing's link (unchecked) checks neither, and
+ * keeps the certificate's hash for the code. */
 #include "relay.h"
 
 #define CA_FILE "/etc/scrobble-ca.pem"
@@ -47,12 +48,14 @@ static int dial(const struct endpoint *ep) {
     return fd;
 }
 
-static int pinned_ok(SSL *ssl, const unsigned char *pin) {
+/* The leaf certificate's DER SHA-256, as a pin names it */
+static int peer_hash(SSL *ssl, unsigned char out[32]) {
     unsigned char md[EVP_MAX_MD_SIZE];
     unsigned n = 0;
     X509 *cert = SSL_get_peer_certificate(ssl);
-    int ok = cert && X509_digest(cert, EVP_sha256(), md, &n) && n == 32 && !memcmp(md, pin, 32);
+    int ok = cert && X509_digest(cert, EVP_sha256(), md, &n) && n == 32;
     if (cert) X509_free(cert);
+    if (ok) memcpy(out, md, 32);
     return ok;
 }
 
@@ -65,7 +68,7 @@ int link_open(struct link *l, const struct endpoint *ep) {
     if (!l->ctx) goto fail;
     SSL_CTX_set_min_proto_version(l->ctx, TLS1_2_VERSION);
     SSL_CTX_set_mode(l->ctx, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    if (ep->pinned) {
+    if (ep->pinned || ep->unchecked) {
         SSL_CTX_set_verify(l->ctx, SSL_VERIFY_NONE, NULL);
     } else {
         SSL_CTX_set_verify(l->ctx, SSL_VERIFY_PEER, NULL);
@@ -75,7 +78,7 @@ int link_open(struct link *l, const struct endpoint *ep) {
         }
     }
     if (!(l->ssl = SSL_new(l->ctx)) || SSL_set_fd(l->ssl, l->fd) != 1) goto fail;
-    if (!ep->pinned && (!SSL_set_tlsext_host_name(l->ssl, ep->host) || SSL_set1_host(l->ssl, ep->host) != 1))
+    if (!ep->pinned && !ep->unchecked && (!SSL_set_tlsext_host_name(l->ssl, ep->host) || SSL_set1_host(l->ssl, ep->host) != 1))
         goto fail;
     for (deadline = now_ms() + HANDSHAKE_MS;;) {
         int r, e;
@@ -88,7 +91,10 @@ int link_open(struct link *l, const struct endpoint *ep) {
             goto fail;
         }
     }
-    if (ep->pinned ? !pinned_ok(l->ssl, ep->pin) : SSL_get_verify_result(l->ssl) != X509_V_OK) {
+    /* Pairing checks nothing here: the code the user types proves the certificate */
+    if (ep->unchecked ? !peer_hash(l->ssl, l->peer)
+        : ep->pinned  ? !peer_hash(l->ssl, l->peer) || memcmp(l->peer, ep->pin, 32)
+                      : SSL_get_verify_result(l->ssl) != X509_V_OK) {
         say("%s: not the bridge's certificate", ep->host);
         goto fail;
     }

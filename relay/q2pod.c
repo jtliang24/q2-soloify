@@ -510,7 +510,18 @@ static void reply(int i) {
         return;
     }
     retry_remote = 1;
-    if (!configured) local_reply(i, "error", "Copy remote to .soloify (see the Soloify guide)");
+    if (!configured) {
+        /* No remote: the pairing's code, or its outcome, as the page's error. An outcome shows
+         * once; the Retry after that pairs again (main.c). */
+        static unsigned told;
+        char text[160];
+        if (!pair_waiting() && pair.state != PAIR_IDLE) {
+            if (told == pair.outcomes) pair.wanted = 1, pair.state = PAIR_LOOKING;
+            told = pair.outcomes;
+        }
+        pair_message(text, sizeof text);
+        local_reply(i, "error", text);
+    }
     else if (!online) local_reply(i, "offline", "Can't reach the Spotify bridge");
     else {
         unsigned char payload[8196];

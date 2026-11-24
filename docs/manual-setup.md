@@ -195,7 +195,7 @@ Soloify Delay (Auto, 1, 2, 4 or 8 s) and Soloify Quality (96, 128 or 160 kbit/s)
 
 | Symptom | Likely cause |
 | --- | --- |
-| "Copy remote to .soloify" | `.soloify/remote` is missing; Retry re-reads it |
+| "Pair: enter 123 456 on your Soloify server" | `.soloify/remote` is missing: type the code into `soloify pair-device` on the server, then Retry. A copied `remote` is read at the next Retry too |
 | "Soloify isn't running" or "didn't answer" | the launcher failed; read `.soloify/spot.log`, and check `q2-soloify` and `run` are executable |
 | `telnet` can't connect | the firewall (host or Windows/macOS) blocks 7443, or the M1 is on a different network or a guest SSID |
 | The relay connects, then drops at once | the token or `sha256=` pin doesn't match this bridge's `data/`; remake `remote` |

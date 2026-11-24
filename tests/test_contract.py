@@ -430,9 +430,9 @@ async def test_missing_remote_retry_and_shutdown(tmp_path):
         relay = await Relay(tmp_path, [], "-q", env={"SOLOIFY_Q2POD": str(base)}).start()
         try:
             await until(lambda: Path(f"{base}.browse.sock").exists())
-            assert b"Copy remote to .soloify" in await browse(base)
+            assert b"\terror\tPair: looking for your Soloify server" in await browse(base)
             (tmp_path / "remote").write_text("127.0.0.1 1 token sha256=" + "00" * 32 + "\n")
-            await browse(base)  # Retry wakes the reconnect backoff and reloads remote
+            await browse(base)  # Retry ends the pairing and reloads remote
             # Read the log to observe the reload, then the browser reports offline instead.
             await relay.expect("can't connect")
             assert b"\toffline\t" in await browse(base)

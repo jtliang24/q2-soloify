@@ -65,7 +65,7 @@ docs/         setup per OS, wire spec, troubleshooting
 - Folder `.soloify/`, binary `q2-soloify`; the same `/tmp` contract as librespot.
 - `.soloify/remote`: one endpoint per line, `HOST PORT TOKEN [sha256=HEX] [buffer=MS]`, tried in order (LAN address first, then WAN), each with a short connect timeout. With `sha256=`, the relay pins the server's leaf certificate. Without it, the relay checks the name and the CA bundle.
 - **Delay and bitrate are the user's settings** (decided 2026-10-27, after step 1): the buffer target defaults to 1 s on the LAN and 4 s beyond it, and the bitrate to 160 kbit/s. A longer target means fewer dropouts on spotty Wi-Fi for more delay (step 1 measured the delay at the target or up to half a second more). Until the settings UI (section 5), `buffer=` and `soloify serve --bitrate` set them.
-- No `remote` file: the browse socket answers `error` with the message "Copy remote to .soloify (see the Soloify guide)", and Retry re-reads the file.
+- No `remote` file: the relay pairs by code (docs/wire.md, Pairing), and the browse socket answers `error` with the code ("Pair: enter 123 456 on your Soloify server") or the outcome; Retry re-reads the file, and after an outcome pairs again.
 - Explicit pause now drops output immediately, restores Soloist to the hardware-measured heard position and resumes with fresh capture (revised user decision, 2026-10-30). Startup Pause cancels buffering and preserves the first pending sample. See [implementation/runbook](docs/pause-rewind.md); physical validation is pending. The earlier drain-on-pause results below are historical. Stop/deactivation still release the sink immediately. Keep one buffer on the device and pause Soloist after a stall longer than the buffer.
 
 ## 3. Bridge (server)

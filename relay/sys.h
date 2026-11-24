@@ -8,6 +8,8 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -28,6 +30,7 @@
 #include <unistd.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -89,6 +92,12 @@ typedef unsigned long long uint64_t;
 #define PR_SET_PDEATHSIG 1
 #define LOCK_EX 2
 #define LOCK_NB 4
+#define AF_INET 2
+#define SO_BROADCAST 0x0020
+#define CLOCK_REALTIME 0
+#define IFF_UP 0x1
+#define IFF_BROADCAST 0x2
+#define IFF_LOOPBACK 0x8
 
 struct timespec { long tv_sec, tv_nsec; };
 struct pollfd { int fd; short events, revents; };
@@ -103,6 +112,17 @@ struct dirent {
     char d_name[256];
 };
 typedef struct __dirstream DIR;
+struct in_addr { uint32_t s_addr; };
+struct sockaddr_in { unsigned short sin_family, sin_port; struct in_addr sin_addr; unsigned char sin_zero[8]; };
+struct ifaddrs {
+    struct ifaddrs *ifa_next;
+    char *ifa_name;
+    unsigned ifa_flags;
+    struct sockaddr *ifa_addr, *ifa_netmask;
+    union { struct sockaddr *ifu_broadaddr, *ifu_dstaddr; } ifa_ifu;
+    void *ifa_data;
+};
+#define ifa_broadaddr ifa_ifu.ifu_broadaddr
 struct addrinfo {
     int ai_flags, ai_family, ai_socktype, ai_protocol;
     socklen_t ai_addrlen;
@@ -131,6 +151,10 @@ int listen(int, int), accept(int, struct sockaddr *, socklen_t *);
 int setsockopt(int, int, int, const void *, socklen_t), getsockopt(int, int, int, void *, socklen_t *);
 int getaddrinfo(const char *, const char *, const struct addrinfo *, struct addrinfo **);
 void freeaddrinfo(struct addrinfo *);
+ssize_t sendto(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
+int getifaddrs(struct ifaddrs **), fsync(int);
+void freeifaddrs(struct ifaddrs *);
+char *getcwd(char *, size_t);
 void *malloc(size_t), free(void *);
 void *memcpy(void *, const void *, size_t), *memmove(void *, const void *, size_t), *memset(void *, int, size_t);
 void *memchr(const void *, int, size_t);
@@ -184,6 +208,7 @@ int EVP_DigestInit_ex(EVP_MD_CTX *, const EVP_MD *, void *);
 int EVP_DigestUpdate(EVP_MD_CTX *, const void *, size_t);
 int EVP_DigestFinal_ex(EVP_MD_CTX *, unsigned char *, unsigned *);
 void ERR_clear_error(void);
+int RAND_bytes(unsigned char *, int);
 #define SSL_CTX_set_min_proto_version(c, v) SSL_CTX_ctrl(c, SSL_CTRL_SET_MIN_PROTO_VERSION, v, NULL)
 #define SSL_CTX_set_mode(c, m) SSL_CTX_ctrl(c, SSL_CTRL_MODE, m, NULL)
 #define SSL_set_tlsext_host_name(s, n) SSL_ctrl(s, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name, (void *)(n))

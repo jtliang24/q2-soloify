@@ -21,13 +21,21 @@ struct endpoint {
     char host[128], port[8], token[80];
     unsigned char pin[32];
     int pinned, lan, buffer_ms;
+    int unchecked; /* pairing: no pin and no chain check, the certificate's hash kept in the link */
 };
 int remote_load(const char *path, struct endpoint *eps, int max);
+/* One remote line (changed in place) into ep, as remote_load reads it: 0, or -1 when unreadable */
+int remote_parse(char *line, struct endpoint *ep);
 /* The integer in .soloify/NAME, a setting the Q2 Pod firmware writes; 0 if absent or invalid */
 int remote_setting(const char *remote, const char *name);
 
 /* tls.c */
-struct link { int fd; SSL_CTX *ctx; SSL *ssl; };
+struct link {
+    int fd;
+    SSL_CTX *ctx;
+    SSL *ssl;
+    unsigned char peer[32]; /* the leaf certificate's DER SHA-256, after an unchecked open */
+};
 int link_open(struct link *l, const struct endpoint *ep);
 int link_read(struct link *l, void *buf, int n);        /* >0 bytes, 0 none yet, -1 gone */
 int link_write(struct link *l, const void *buf, int n); /* bytes taken (maybe 0), -1 gone */
@@ -95,6 +103,44 @@ int swap_in(char *msg, int cap);
 int swap_out(char *msg, int cap);
 /* main.c: dial ep and say hello, then hang up; 0 when the bridge answered ok */
 int relay_probe(const struct endpoint *ep);
+/* main.c: dial ep and say ping, which leaves a playing relay its session: 0 on pong, 1 when the
+ * bridge closed without a word after the handshake (a bridge without ping, or a wrong token), -1
+ * when it wasn't reached */
+int relay_ping(const struct endpoint *ep);
+
+/* pair.c: pairing by code (docs/wire.md, Pairing). pair_run looks for the bridge (host NULL) or
+ * dials host:port, shows the code (pair.code) and waits for the answer, serving the page meanwhile
+ * through relay_wait; on success it writes REMOTE, and the remote in the folder also too when not
+ * NULL. Its outcome stays in pair.state until the next run; pair.cancel ends a run early. */
+enum { PAIR_IDLE, PAIR_LOOKING, PAIR_CONNECTING, PAIR_CODE, PAIR_NOT_FOUND, PAIR_PAIRED, PAIR_DENIED,
+       PAIR_FAILED };
+struct pair {
+    int state;
+    volatile int cancel;
+    char code[8];            /* "123 456", from PAIR_CODE on */
+    char host[128], port[8]; /* the bridge dialled, or being dialled */
+    char why[160];           /* PAIR_DENIED, PAIR_FAILED: in words */
+    const char *watch;       /* a remote whose appearing cancels the run (the relay's own) */
+    int wanted;              /* a run asked for: the relay page's Retry after an outcome */
+    unsigned outcomes;       /* runs ended, so the page tells each outcome once */
+};
+extern struct pair pair;
+void pair_run(const char *remote, const char *also, const char *host, const char *port);
+int pair_waiting(void); /* a run under way: LOOKING, CONNECTING or CODE */
+/* The relay page's error message while it has no remote */
+void pair_message(char *out, int cap);
+/* The code of F and the nonce, as docs/wire.md has it: "060 893" */
+void pair_code(const unsigned char f[32], const unsigned char nonce[16], char out[8]);
+
+/* pair.c, Away: whether the WAN line (any remote line after the first, the LAN one) has worked.
+ * The relay appends "verified <unix time> <host>" to away beside its remote at a WAN line's first
+ * connection, and counts WAN failures in /tmp/q2-soloify.away (SOLOIFY_AWAY_COUNT). */
+enum { AWAY_NONE, AWAY_UNVERIFIED, AWAY_VERIFIED, AWAY_UNREACHED };
+/* One round over the relay's n endpoints: up the index connected, -1 when every one failed */
+void away_round(const char *remote, const struct endpoint *eps, int n, int up);
+/* The state of remote's WAN line, from away in the folders dirs[0..n) and the count; *when its
+ * verification's unix time */
+int away_state(const char *remote, const char *const *dirs, int n, long long *when);
 
 /* audio.c: the ring, the Ogg stream and the sink */
 void audio_start(int target_ms); /* a link is up, with this buffer target */

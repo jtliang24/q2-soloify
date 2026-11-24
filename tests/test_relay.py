@@ -91,9 +91,13 @@ async def test_reconnects_after_the_bridge_restarts(tmp_path, rig):
         await bridge.stop()
 
 
-async def test_no_remote_file_says_so(tmp_path, rig):
+async def test_no_remote_file_pairs(tmp_path, rig):
     relay = await rig([])
-    await relay.expect("copy remote to .soloify")
+    await relay.expect("no endpoint in remote: pairing")
+    await relay.expect("pair: looking for the bridge")
+    # Nothing answers on loopback (conftest): after 10 s the relay says so, and waits for a Retry
+    await relay.expect("pair: no bridge answered", timeout=15)
+    await relay.expect("pair on the page's Retry, or copy remote")
 
 
 async def test_unreadable_line_is_skipped(tmp_path, rig):

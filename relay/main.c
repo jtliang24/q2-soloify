@@ -3,7 +3,8 @@
  * a backoff of 1 to 15 s while every endpoint fails. The buffer target is -b, else .delay beside
  * REMOTE (the firmware's Delay setting, in ms), else the endpoint's buffer=, else 1 s on the LAN
  * and 4 s beyond it. .quality (96, 128 or 160) asks the bridge for that bitrate. -q enables the
- * device contract. q2-soloify [-v] --manage serves the Soloify app's page instead (manage.c). */
+ * device contract. Without a remote it pairs by code (pair.c), the page showing the code, and dials
+ * what that wrote. q2-soloify [-v] --manage serves the Soloify app's page instead (manage.c). */
 #include "relay.h"
 
 #define HELLO_MS 5000
@@ -96,9 +97,10 @@ static int pull(uint64_t *last_rx) {
     }
 }
 
-static int hello(const struct endpoint *ep) {
+/* Says WORD 2 TOKEN (hello, or ping) and waits for answer (ok 2, or pong 2) */
+static int greet(const struct endpoint *ep, const char *word, const char *answer) {
     char line[128];
-    int n = snprintf(line, sizeof line, "hello 2 %s\n", ep->token);
+    int n = snprintf(line, sizeof line, "%s 2 %s\n", word, ep->token), k = strlen(answer);
     uint64_t deadline = now_ms() + HELLO_MS, rx = 0;
     memset(&wire, 0, sizeof wire);
     memcpy(wire.out, line, n);
@@ -107,23 +109,44 @@ static int hello(const struct endpoint *ep) {
         if (flush() < 0 || (wire.nout && !relay_wait(conn.fd, POLLOUT, deadline))) return -1;
     for (;;) {
         unsigned char *nl;
-        if (pull(&rx) < 0) return -1;
+        int gone = pull(&rx) < 0; /* a pong comes with the end of the link: read it first */
         if ((nl = memchr(wire.in, '\n', wire.nin))) {
             n = nl + 1 - wire.in;
-            if (n != 5 || memcmp(wire.in, "ok 2\n", 5)) return -1;
+            if (n != k || memcmp(wire.in, answer, k)) return -1;
             memmove(wire.in, wire.in + n, wire.nin - n);
             wire.nin -= n;
             return 0;
         }
-        if (!relay_wait(conn.fd, POLLIN, deadline)) return -1;
+        if (gone || !relay_wait(conn.fd, POLLIN, deadline)) return -1;
     }
 }
+
+static int hello(const struct endpoint *ep) { return greet(ep, "hello", "ok 2\n"); }
 
 int relay_probe(const struct endpoint *ep) {
     if (link_open(&conn, ep) < 0) return -1;
     int r = hello(ep);
     link_close(&conn);
     return r;
+}
+
+int relay_ping(const struct endpoint *ep) {
+    if (link_open(&conn, ep) < 0) return -1;
+    int r = greet(ep, "ping", "pong 2\n") ? 1 : 0;
+    link_close(&conn);
+    return r;
+}
+
+/* Where a pairing also writes remote: .soloify beside the Spotify slot the relay runs in, so the
+ * Soloify app sees it */
+static const char *pair_also(const char *path) {
+    static char cwd[256];
+    int n, fd;
+    if (strcmp(path, "remote") || !getcwd(cwd, sizeof cwd)) return NULL;
+    n = strlen(cwd);
+    if (n < 9 || strcmp(cwd + n - 9, "/.spotify") || (fd = open("../.soloify", 0)) < 0) return NULL;
+    close(fd);
+    return "../.soloify";
 }
 
 static void stats(const struct endpoint *ep, unsigned received) {
@@ -237,7 +260,15 @@ int main(int argc, char **argv) {
         int n = remote_load(path, eps, MAX_ENDPOINTS), up = 0;
         retry_remote = 0;
         q2pod_config(n > 0);
-        if (n <= 0) say("no endpoint in %s: copy remote to .soloify (see the Soloify guide)", path);
+        if (n <= 0 && (pair.state == PAIR_IDLE || pair.wanted)) {
+            /* No remote: pair by code, the page showing it (q2pod.c), then load what it wrote */
+            say("no endpoint in %s: pairing", path);
+            pair.wanted = 0;
+            pair.watch = path;
+            pair_run(path, pair_also(path), NULL, NULL);
+            continue;
+        }
+        if (n <= 0) say("no endpoint in %s: pair on the page's Retry, or copy remote (see the Soloify guide)", path);
         for (int i = 0; i < n && !up && !quitting; ++i) {
             if (link_open(&conn, &eps[i]) < 0) continue;
             if (hello(&eps[i]) < 0) {
@@ -246,6 +277,7 @@ int main(int argc, char **argv) {
                 continue;
             }
             up = 1;
+            away_round(path, eps, n, i);
             /* Read for every connection, so a setting the firmware changed applies at the next one */
             int delay = remote_setting(path, ".delay"), quality = remote_setting(path, ".quality");
             if (delay < 200 || delay > 20000) delay = 0;
@@ -257,6 +289,7 @@ int main(int argc, char **argv) {
             backoff = 1000;
             continue;
         }
+        if (!quitting) away_round(path, eps, n, -1);
         relay_wait(-1, 0, now_ms() + backoff);
         backoff = backoff * 2 > BACKOFF_MAX_MS ? BACKOFF_MAX_MS : backoff * 2;
     }

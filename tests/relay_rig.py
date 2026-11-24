@@ -67,8 +67,8 @@ class Bridge:
         self.sessions.append(s)
         await s.run(reader, writer)
 
-    async def start(self, port: int = 0):
-        self.listener = await self.server.start("127.0.0.1", port)
+    async def start(self, port: int = 0, host: str = "127.0.0.1"):
+        self.listener = await self.server.start(host, port)
         self.port = self.listener.sockets[0].getsockname()[1]
         return self
 
