@@ -29,7 +29,7 @@ import webbrowser
 import zipfile
 from pathlib import Path
 
-from . import __version__, server, soloist, spotify
+from . import __version__, pairing, server, soloist, spotify
 from .setup_bootstrap import IMAGE, SetupError, ask_yes, detect, release_asset, source_root
 
 PORT = 7443
@@ -897,6 +897,64 @@ class Wizard:
             lines += server.remote_lines(identity, [wan], self.state["wan_port"])
         return "\n".join(lines) + "\n"
 
+    def connect_device(self, remote: str):
+        """Pairing by code first; copying `remote` to the card stays the manual way."""
+        if ask_yes(
+            "Pair the device now by the code it shows (No = export files to copy to the card)",
+            True,
+        ):
+            if self.pair_device(remote):
+                return
+            if not ask_yes("Export files to copy to the card by hand instead", True):
+                return
+        self.export(remote)
+
+    def pair_device(self, remote: str) -> bool:
+        """`soloify pair-device` against the running bridge, with this process answering the
+        device's UDP broadcasts: under Docker the bridge's own network never hears them, so the
+        container's pair-device runs through `exec` without discovery, as the native one does."""
+        lan, port = self.state["lan"], self.state["port"]
+        args = ["pair-device", "--no-discovery", "--lan", lan, "--port", str(port)]
+        if self.state.get("wan"):
+            args += ["--wan", self.state["wan"], "--wan-port", str(self.state["wan_port"])]
+        if self.method == "docker":
+            cmd = ["docker", "compose", "-f", str(self.compose), "exec", "-T", "-u", "soloify"]
+            cmd += ["soloify", "soloify", *args]
+        else:
+            cmd = [sys.executable, "-m", "soloify.cli", "--data", str(self.data), *args]
+        # The admin socket opens before the TLS port, so a TLS answer means pairing can start
+        pin = remote.splitlines()[0].split()[3].removeprefix("sha256=")
+        for _ in range(10):
+            if tls_check(lan, port, pin)[0]:
+                break
+            time.sleep(1)
+        print(
+            "On the device, open Library → Apps → Soloify → Pair with server, then type the "
+            "code it shows here."
+        )
+        if sys.platform == "win32":
+            print(
+                "Windows Firewall may ask whether Python may use the network: allow it on "
+                f"private networks, so the device can find this computer (UDP {pairing.UDP_PORT})."
+            )
+        listener = pairing.Discovery(lan, port)
+        if not listener.start():
+            print(
+                f"UDP {pairing.UDP_PORT} is in use here, so the device won't find this computer "
+                f"by itself: enter {lan} on it when it asks."
+            )
+        try:
+            # Not self.command: the user types the code into this child, and sees its output
+            done = subprocess.run(cmd, check=False)
+        finally:
+            listener.stop()
+        self.results["Device pairing"] = (
+            ("paired (home only)" if not self.state.get("wan") else "paired (home and away)")
+            if done.returncode == 0
+            else "not paired; rerun setup or run soloify pair-device"
+        )
+        return done.returncode == 0
+
     def export(self, remote: str):
         complete = ask_yes("Export complete .soloify folder (No = remote configuration only)", True)
         files = None
@@ -1140,7 +1198,7 @@ class Wizard:
             if resume and self.method == "native":
                 self.stop_native()
             self.start()
-            self.export(self.remote())
+            self.connect_device(self.remote())
             self.verify(self.remote())
             self.diagnostics()
             self.state["configured"] = True

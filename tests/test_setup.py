@@ -4,6 +4,7 @@ import asyncio
 import json
 import socket
 import struct
+import subprocess
 import sys
 
 import pytest
@@ -446,6 +447,7 @@ def test_configuration_only_rerun_does_not_pair_or_replace_identity(tmp_path, mo
         monkeypatch.setattr(wizard, name, lambda: None)
     monkeypatch.setattr(wizard, "remote", lambda: "private remote")
     monkeypatch.setattr(wizard, "export", lambda remote: None)
+    monkeypatch.setattr(wizard, "pair_device", lambda remote: True)
     monkeypatch.setattr(wizard, "verify", lambda remote: None)
     assert wizard.run() == 0
     assert wizard.state["installation"] == "b" * 12
@@ -531,3 +533,101 @@ def test_card_export_failure_explains_how_to_retry(tmp_path, monkeypatch, capsys
     assert "Could not write the card export" in text
     assert "Check that the destination is writable" in text
     assert "private remote" not in text
+
+
+class FakeDiscovery:
+    made = []
+
+    def __init__(self, host, port, **kw):
+        self.host, self.port, self.running = host, port, False
+        FakeDiscovery.made.append(self)
+
+    def start(self):
+        self.running = True
+        return True
+
+    def stop(self):
+        self.running = False
+
+
+def _pairing_wizard(tmp_path, monkeypatch, method, state, returncode=0):
+    wizard = setup.Wizard(tmp_path, method)
+    wizard.state = {"installation": "c" * 12, **state}
+    FakeDiscovery.made = []
+    runs = []
+
+    def run(cmd, check=False):
+        assert FakeDiscovery.made[-1].running  # the host answers broadcasts meanwhile
+        runs.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode)
+
+    monkeypatch.setattr(setup.pairing, "Discovery", FakeDiscovery)
+    monkeypatch.setattr(setup.subprocess, "run", run)
+    monkeypatch.setattr(setup, "tls_check", lambda *a, **kw: (True, "pin verified"))
+    return wizard, runs
+
+
+REMOTE = "192.0.2.10 7443 token sha256=" + "ab" * 32 + "\n"
+
+
+def test_docker_pairing_runs_listener_on_host_and_exec_without_discovery(tmp_path, monkeypatch):
+    wizard, runs = _pairing_wizard(
+        tmp_path,
+        monkeypatch,
+        "docker",
+        {"lan": "192.0.2.10", "port": 7443, "wan": "music.example.com", "wan_port": 8443},
+    )
+    assert wizard.pair_device(REMOTE)
+    assert runs == [
+        ["docker", "compose", "-f", str(wizard.compose), "exec", "-T", "-u", "soloify"]
+        + ["soloify", "soloify", "pair-device", "--no-discovery", "--lan", "192.0.2.10"]
+        + ["--port", "7443", "--wan", "music.example.com", "--wan-port", "8443"]
+    ]
+    (listener,) = FakeDiscovery.made
+    assert (listener.host, listener.port, listener.running) == ("192.0.2.10", 7443, False)
+    assert wizard.results["Device pairing"] == "paired (home and away)"
+
+
+def test_native_pairing_home_only(tmp_path, monkeypatch):
+    wizard, runs = _pairing_wizard(
+        tmp_path, monkeypatch, "native", {"lan": "192.0.2.10", "port": 7443}
+    )
+    assert wizard.pair_device(REMOTE)
+    assert runs[0][:5] == [sys.executable, "-m", "soloify.cli", "--data", str(wizard.data)]
+    assert runs[0][5:] == ["pair-device", "--no-discovery", "--lan", "192.0.2.10", "--port", "7443"]
+    assert wizard.results["Device pairing"] == "paired (home only)"
+
+
+def test_windows_firewall_note(tmp_path, monkeypatch, capsys):
+    wizard, _ = _pairing_wizard(
+        tmp_path, monkeypatch, "docker", {"lan": "192.0.2.10", "port": 7443}
+    )
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+    wizard.pair_device(REMOTE)
+    assert "Windows Firewall" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "pair,fallback,exported", [(True, True, True), (True, False, False), (False, None, True)]
+)
+def test_failed_pairing_offers_manual_export(tmp_path, monkeypatch, pair, fallback, exported):
+    wizard, _ = _pairing_wizard(
+        tmp_path, monkeypatch, "docker", {"lan": "192.0.2.10", "port": 7443}, returncode=1
+    )
+    answers = iter([pair, fallback])
+    monkeypatch.setattr(setup, "ask_yes", lambda *a: next(answers))
+    done = []
+    monkeypatch.setattr(wizard, "export", lambda remote: done.append(remote))
+    wizard.connect_device(REMOTE)
+    assert done == ([REMOTE] if exported else [])
+    if pair:
+        assert wizard.results["Device pairing"].startswith("not paired")
+
+
+def test_successful_pairing_skips_export(tmp_path, monkeypatch):
+    wizard, _ = _pairing_wizard(
+        tmp_path, monkeypatch, "native", {"lan": "192.0.2.10", "port": 7443}
+    )
+    monkeypatch.setattr(setup, "ask_yes", lambda *a: True)
+    monkeypatch.setattr(wizard, "export", lambda remote: pytest.fail("paired: nothing to copy"))
+    wizard.connect_device(REMOTE)

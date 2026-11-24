@@ -27,6 +27,32 @@ To migrate an existing manually managed installation, stop it first, import its
 paired `soloist-state` and OAuth file, and keep using its original bridge identity if
 you reuse its data directory. The wizard's default root creates a separate installation.
 
+## Pairing the device
+
+After the bridge starts, setup offers to pair the device by a code instead of copying
+`remote` to the card. On the device open Library → Apps → Soloify → Pair with server; it
+finds this computer by a UDP broadcast on port 7444 and shows a six-digit code, which you
+type into setup. The device then holds the bridge's LAN endpoint and, when the away step is
+set up, its WAN endpoint, with the same token and certificate pin. Windows Firewall may ask
+whether Python may use the network the first time: allow it on private networks. On guest
+Wi-Fi or with client isolation the broadcast doesn't arrive; enter the bridge's LAN address on
+the device when it asks.
+
+To pair another device later, run `soloify pair-device` on the bridge, or with Docker:
+
+```sh
+docker compose -f ~/.soloify-bridge/compose.json exec -T -u soloify soloify soloify pair-device
+```
+
+The container can't hear the broadcast, so enter the LAN address on the device when it asks
+(or rerun setup, which answers it). `pair-device` reuses the endpoints setup last gave it.
+Without an away endpoint it ends with "Paired for home only"; run setup's away step, then pair
+again. With a raw IP address as the away endpoint it warns that the address changes when your
+ISP changes it, and still pairs: prefer a DDNS name. Pairing is accepted only from private
+addresses, only while `pair-device` waits, and five times a minute at most. It reuses the
+existing token; `soloify remote --rotate` replaces it, which revokes every paired device.
+Declining or failing pairing falls back to exporting files to copy by hand, as before.
+
 ## Away listening
 
 The route is:
@@ -64,8 +90,8 @@ not provision VPNs. A working LAN configuration remains usable if WAN is unresol
 
 To verify, disconnect the device from home Wi-Fi, connect to a phone hotspot using
 mobile data, and play. Until you confirm this succeeds, setup says
-“WAN configured; external verification pending.” Rerun to change endpoints and export
-again without re-pairing.
+“WAN configured; external verification pending.” Rerun to change endpoints and pair or export
+again without re-pairing Spotify.
 
 ## Startup and troubleshooting
 
